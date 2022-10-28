@@ -574,22 +574,26 @@ static void ble_plat_svc_config(void)
 			break;
 		}
 	} else if (device_id == MVEBU_CN9130_DEV_ID) {
-		NOTICE("SVC: DEV ID: %s, FREQ Mode: 0x%x\n",
-		       "CN913x", freq_pidi_mode);
+		//NOTICE("SVC: DEV ID: %s, FREQ Mode: 0x%x\n",
+		//       "CN913x", freq_pidi_mode);
+		int cpufreq;
 		switch (freq_pidi_mode) {
 		case CPU_2200_DDR_1200_RCLK_1200:
 			if (perr[0])
 				goto perror;
 			avs_workpoint = svc[0];
+			cpufreq = 2200;
 			break;
 		case CPU_2000_DDR_1200_RCLK_1200:
 			if (perr[1])
 				goto perror;
+			cpufreq = 2000;
 			avs_workpoint = svc[1];
 			break;
 		case CPU_1600_DDR_1200_RCLK_1200:
 			if (perr[2])
 				goto perror;
+			cpufreq = 1600;
 			avs_workpoint = svc[2];
 			break;
 		default:
@@ -598,6 +602,7 @@ static void ble_plat_svc_config(void)
 			return;
 
 		}
+		NOTICE("CN913x@%dMHz\n", cpufreq);
 	} else {
 		ERROR("SVC: Unsupported Device ID 0x%x\n", device_id);
 		return;
@@ -622,9 +627,9 @@ static void ble_plat_svc_config(void)
 
 set_aws_wp:
 	reg_val  = mmio_read_32(AVS_EN_CTRL_REG);
-	NOTICE("SVC: AVS work point changed from 0x%x to 0x%x\n",
-		(reg_val & AVS_VDD_LOW_LIMIT_MASK) >> AVS_LOW_VDD_LIMIT_OFFSET,
-		avs_workpoint);
+//	NOTICE("SVC: AVS work point changed from 0x%x to 0x%x\n",
+//		(reg_val & AVS_VDD_LOW_LIMIT_MASK) >> AVS_LOW_VDD_LIMIT_OFFSET,
+//		avs_workpoint);
 	reg_val &= ~(AVS_VDD_LOW_LIMIT_MASK | AVS_VDD_HIGH_LIMIT_MASK);
 	reg_val |= 0x1 << AVS_ENABLE_OFFSET;
 	reg_val |= avs_workpoint << AVS_HIGH_VDD_LIMIT_OFFSET;

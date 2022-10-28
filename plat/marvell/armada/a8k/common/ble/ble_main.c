@@ -40,7 +40,7 @@ int exec_ble_main(int bootrom_flags)
 	if ((bootrom_flags & BR_FLAG_SILENT) == 0)
 		marvell_console_boot_init();
 
-	NOTICE("Starting binary extension\n");
+//	NOTICE("Starting binary extension\n");
 
 	/* initialize time (for delay functionality) */
 	plat_delay_timer_init();

@@ -21,6 +21,38 @@
 
 #define MVEBU_MPP_CTRL_MASK			0xf
 
+#if 0
+static void hexdump(u8 *buf, int size)
+{
+	int i = 0;
+	char ascii[20];
+
+	ascii[0] = 0;
+	for (i = 0; i < size; i++) {
+		if (0 == (i % 16)) {
+			if (ascii[0]) {
+				ascii[16] = 0;
+				//printf("  |%s|", ascii);
+				printf("\n");
+				ascii[0] = 0;
+			}
+			// address
+			printf("%06x ", i);
+		}
+		if (0 == (i % 8))
+			printf(" ");
+		printf("%02x ", buf[i]);
+		ascii[i % 16] = (buf[i] < ' ' || buf[i] > 127) ? '.' : buf[i];
+	}
+	//printf("  |%s|", ascii);
+	printf("\n");
+}
+#else
+static void hexdump(u8 *buf, int size)
+{
+}
+#endif
+
 /*
  * This struct provides the DRAM training code with
  * the appropriate board DRAM configuration
@@ -228,6 +260,195 @@ static void mpp_config(void)
 	mmio_write_32(reg, val);
 }
 
+#define MV_DDR_SPD_DATA_MTB             125     /* medium timebase, ps */
+#define MV_DDR_SPD_DATA_FTB             1       /* fine timebase, ps */
+#define MV_DDR_SPD_MSB_OFFS             8       /* most significant byte offset, bits */
+
+#define CL(x) (BIT(x-7))
+
+union mv_ddr_spd_data spd_data;
+
+/* set SPD data bytes for a specific timing array */
+void mv_ddr_spd_timing_set(union mv_ddr_spd_data *spd, unsigned int timing_data[])
+{
+	/* t ck avg min, ps */
+	spd->byte_fields.byte_18 = timing_data[MV_DDR_TCK_AVG_MIN] / MV_DDR_SPD_DATA_MTB;
+	spd->byte_fields.byte_125 = (timing_data[MV_DDR_TCK_AVG_MIN] - spd_data.byte_fields.byte_18 * MV_DDR_SPD_DATA_MTB) / MV_DDR_SPD_DATA_FTB;
+
+	/* t aa min, ps */
+	spd->byte_fields.byte_24 = timing_data[MV_DDR_TAA_MIN] / MV_DDR_SPD_DATA_MTB;
+	spd->byte_fields.byte_123 = (timing_data[MV_DDR_TAA_MIN] - spd->byte_fields.byte_24 * MV_DDR_SPD_DATA_MTB) / MV_DDR_SPD_DATA_FTB;
+
+	/* t rfc1 min, ps */
+	spd->byte_fields.byte_30 = timing_data[MV_DDR_TRFC1_MIN] / MV_DDR_SPD_DATA_MTB;
+	spd->byte_fields.byte_31 = ((timing_data[MV_DDR_TRFC1_MIN] / MV_DDR_SPD_DATA_MTB)) >> MV_DDR_SPD_MSB_OFFS;
+
+	/* t wr min, ps */
+	spd->byte_fields.byte_42 = (timing_data[MV_DDR_TWR_MIN] / MV_DDR_SPD_DATA_MTB) & 0xff;
+	spd->byte_fields.byte_41.bit_fields.t_wr_min_msn = (timing_data[MV_DDR_TWR_MIN] / MV_DDR_SPD_DATA_MTB) >> MV_DDR_SPD_MSB_OFFS;
+
+	/* t rcd min, ps */
+	spd->byte_fields.byte_25 = timing_data[MV_DDR_TRCD_MIN] / MV_DDR_SPD_DATA_MTB;
+	spd->byte_fields.byte_122 = (timing_data[MV_DDR_TRCD_MIN] - (spd->byte_fields.byte_25 * MV_DDR_SPD_DATA_MTB) / MV_DDR_SPD_DATA_FTB);
+
+	/* t rp min, ps */
+	spd->byte_fields.byte_26 = timing_data[MV_DDR_TRP_MIN] / MV_DDR_SPD_DATA_MTB;
+	spd->byte_fields.byte_121 = timing_data[MV_DDR_TRP_MIN] - (spd->byte_fields.byte_26 * MV_DDR_SPD_DATA_MTB) / MV_DDR_SPD_DATA_FTB;
+
+	/* t rc min, ps */
+	spd->byte_fields.byte_29 = (timing_data[MV_DDR_TRC_MIN] / MV_DDR_SPD_DATA_MTB) & 0xff;
+	spd->byte_fields.byte_27.bit_fields.t_rc_min_msn |= (timing_data[MV_DDR_TRC_MIN] / MV_DDR_SPD_DATA_MTB) >> MV_DDR_SPD_MSB_OFFS;
+	spd->byte_fields.byte_120 = (timing_data[MV_DDR_TRC_MIN] - (((spd->byte_fields.byte_27.bit_fields.t_rc_min_msn << MV_DDR_SPD_MSB_OFFS) + spd->byte_fields.byte_29) * MV_DDR_SPD_DATA_MTB)) / MV_DDR_SPD_DATA_FTB;
+
+	/* t ras min, ps */
+	spd->byte_fields.byte_28 = (timing_data[MV_DDR_TRAS_MIN] / MV_DDR_SPD_DATA_MTB) & 0xff;
+	spd->byte_fields.byte_27.bit_fields.t_ras_min_msn |= (timing_data[MV_DDR_TRAS_MIN] / MV_DDR_SPD_DATA_MTB) >> MV_DDR_SPD_MSB_OFFS;
+
+	/* t rrd s min, ps */
+	spd->byte_fields.byte_38 = timing_data[MV_DDR_TRRD_S_MIN] / MV_DDR_SPD_DATA_MTB;
+	spd->byte_fields.byte_119 = (timing_data[MV_DDR_TRRD_S_MIN] - (spd->byte_fields.byte_38 * MV_DDR_SPD_DATA_MTB)) / MV_DDR_SPD_DATA_FTB;
+
+	/* t rrd l min, ps */
+	spd->byte_fields.byte_39 = timing_data[MV_DDR_TRRD_L_MIN] / MV_DDR_SPD_DATA_MTB;
+	spd->byte_fields.byte_118 = (timing_data[MV_DDR_TRRD_L_MIN] - (spd->byte_fields.byte_39 * MV_DDR_SPD_DATA_MTB)) / MV_DDR_SPD_DATA_FTB;
+
+	/* t ccd l min, ps */
+	spd->byte_fields.byte_40 = timing_data[MV_DDR_TCCD_L_MIN] / MV_DDR_SPD_DATA_MTB;
+	spd->byte_fields.byte_117 = (timing_data[MV_DDR_TCCD_L_MIN] - (spd->byte_fields.byte_40) * MV_DDR_SPD_DATA_MTB) / MV_DDR_SPD_DATA_FTB;
+
+	/* t faw min, ps */
+	spd->byte_fields.byte_37 = (timing_data[MV_DDR_TFAW_MIN] / MV_DDR_SPD_DATA_MTB) & 0xff;
+	spd->byte_fields.byte_36.bit_fields.t_faw_min_msn = (timing_data[MV_DDR_TFAW_MIN] / MV_DDR_SPD_DATA_MTB) >> MV_DDR_SPD_MSB_OFFS;
+
+	/* t wtr s min, ps */
+	spd->byte_fields.byte_44 = (timing_data[MV_DDR_TWTR_S_MIN] / MV_DDR_SPD_DATA_MTB) & 0xff;
+	spd->byte_fields.byte_43.bit_fields.t_wtr_s_min_msn = (timing_data[MV_DDR_TWTR_S_MIN] / MV_DDR_SPD_DATA_MTB) >> MV_DDR_SPD_MSB_OFFS;
+
+	/* t wtr l min, ps */
+	spd->byte_fields.byte_45 = (timing_data[MV_DDR_TWTR_L_MIN] / MV_DDR_SPD_DATA_MTB) & 0xff;
+	spd->byte_fields.byte_43.bit_fields.t_wtr_l_min_msn = (timing_data[MV_DDR_TWTR_L_MIN] / MV_DDR_SPD_DATA_MTB) >> MV_DDR_SPD_MSB_OFFS;
+}
+
+/* create SPD data for Gateworks malibu dram config */
+union mv_ddr_spd_data *gateworks_malibu_dram_config(void)
+{
+	union mv_ddr_spd_data *spd = &spd_data;
+
+	/*
+	 * Topology: 4x DDR4 16GiB for total of 8GiB in a 32bit 2 rank config
+	 */
+	const char *topology = "4x16GiB: 8GiB";
+	memset(spd, 0, sizeof(union mv_ddr_spd_data));
+	spd->byte_fields.byte_2 = MV_DDR_SPD_DEV_TYPE_DDR4;
+	spd->byte_fields.byte_3.bit_fields.module_type = MV_DDR_SPD_MODULE_TYPE_UDIMM;
+	/* SDRAM Density / Banks: 2 bank groups, 4 banks 16Gb */
+	spd->byte_fields.byte_4.bit_fields.die_capacity = 0x6; // 16Gb
+	spd->byte_fields.byte_6.bit_fields.die_count = 0; // 1 die
+	/* Module Organization: 2 rank module x16 */
+	spd->byte_fields.byte_12.bit_fields.dimm_pkg_ranks_num = 1; // 2rank
+	spd->byte_fields.byte_12.bit_fields.device_width = 2; // 16bit
+	/* Bus Width: 32bit */
+	spd->byte_fields.byte_13.bit_fields.primary_bus_width = 2; // 32bit
+	spd->byte_fields.byte_13.bit_fields.bus_width_ext = 0;
+	/* Mirror */
+	spd->byte_fields.byte_131.bit_fields.rank_1_mapping = 1;
+
+#if 1 // derate DDR4-3200 to DDR4-2133 per Gateworks Part number
+	/*
+	 * Timings: DDR4-2133 CL: 10, 12, 14, 16
+	 */
+	const char *speed = "DDR4-2133";
+	uint32_t cl = CL(10) | CL(12) | CL(14) | CL(16);
+	/* we add CL19 here due to mv_ddr using 1200Mhz and tclk=833 for
+	 * its CL calculation instead of using the lower tclk of DDR4-2133
+	 * This is 'ok' but performs slower - TODO: update CL calc to use
+	 * lower than two tclks
+	 */
+	cl |= CL(19);
+	unsigned int timing_data[] = {
+		937,	/* tCKmin */
+		15000,	/* tAAmin */
+		350000,	/* tRFC1min */
+		15000,	/* tWRmin */
+		15000,	/* tRCDmin */
+		15000,	/* tRPmin */
+		48000,	/* tRCmin */
+		33000,	/* tRASmin */
+		5300,	/* tRRD_Smin */
+		6400,	/* tRRD_Lmin */
+		5355,	/* tCCD_Lmin */
+		30000,	/* tFAWmin */
+		2500,	/* tWTR_Smin */
+		7500,	/* tWTR_Lmin */
+	};
+#else
+	/*
+	 * Timings : DDR4-3200 CL: 10,12,14,16,18,20,22,24
+	 */
+	const char *speed = "DDR4-3200";
+	uint32_t cl = CL(10) | CL(12) | CL(14) | CL(16) \
+		    | CL(18) | CL(20) | CL(22) | CL(24);
+	unsigned int timing_data[] = {
+		625,	/* tCKmin */
+		15000,	/* tAAmin */
+		350000,	/* tRFC1min */
+		15000,	/* tWRmin */
+		15000,	/* tRCDmin */
+		15000,	/* tRPmin */
+		48000,	/* tRCmin */
+		32000,	/* tRASmin */
+		4700,	/* tRRD_Smin */
+		6400,	/* tRRD_Lmin */
+		5000,	/* tCCD_Lmin */
+		30000,	/* tFAWmin */
+		2500,	/* tWTR_Smin */
+		7500,	/* tWTR_Lmin */
+	};
+#endif
+	mv_ddr_spd_timing_set(spd, timing_data);
+	memcpy(&spd->all_bytes[20], &cl, sizeof(cl));
+
+	NOTICE("%s %s\n", speed, topology);
+	hexdump((unsigned char *)spd, sizeof(union mv_ddr_spd_data));
+
+	return spd;
+}
+
+void gateworks_malibu_mpp_config(void)
+{
+	uintptr_t reg;
+	uint32_t val;
+
+	reg = MVEBU_CP_MPP_REGS(0, 4);
+
+	val = mmio_read_32(reg);
+
+	/* configure CP0 MPP 37 and 38 to i2c */
+	val &= ~((MVEBU_MPP_CTRL_MASK << MVEBU_CP_MPP_CTRL37_OFFS) |
+		(MVEBU_MPP_CTRL_MASK << MVEBU_CP_MPP_CTRL38_OFFS));
+	val |= (MVEBU_CP_MPP_CTRL37_I2C0_SCK_ENA <<
+			MVEBU_CP_MPP_CTRL37_OFFS) |
+		(MVEBU_CP_MPP_CTRL38_I2C0_SDA_ENA <<
+			MVEBU_CP_MPP_CTRL38_OFFS);
+
+	mmio_write_32(reg, val);
+
+}
+
+void gateworks_malibu_config(void)
+{
+	/* TODO: read GSC EEPROM to determine DRAM config */
+	struct mv_ddr_topology_map *tm = mv_ddr_topology_map_get();
+
+	union mv_ddr_spd_data *spd = gateworks_malibu_dram_config();
+	memcpy(tm->spd_data.all_bytes, spd->all_bytes, sizeof(tm->spd_data.all_bytes));
+
+	/* TODO: early GPIO config? */
+	gateworks_malibu_mpp_config();
+
+	/* TODO: pass dtb to U-Boot? */
+}
+
 /*
  * This function may modify the default DRAM parameters
  * based on information received from SPD or bootloader
@@ -249,7 +470,10 @@ void plat_marvell_dram_update_topology(void)
 		i2c_init((void *)MVEBU_CP0_I2C_BASE);
 
 		/* select SPD memory page 0 to access DRAM configuration */
-		i2c_write(I2C_SPD_P0_ADDR, 0x0, 1, tm->spd_data.all_bytes, 1);
+		if (i2c_write(I2C_SPD_P0_ADDR, 0x0, 1, tm->spd_data.all_bytes, 1)) {
+			/* have no SPD - assume Gateworks Malibu */
+			return gateworks_malibu_config();
+		}
 
 		/* read data from spd */
 		i2c_read(I2C_SPD_ADDR, 0x0, 1, tm->spd_data.all_bytes,sizeof(tm->spd_data.all_bytes));
@@ -258,6 +482,6 @@ void plat_marvell_dram_update_topology(void)
 		if (spd_verify_correction_sr(tm->spd_data.all_bytes)) {
 			set_param_based_on_som_strap();
 		}
-	
+		hexdump(tm->spd_data.all_bytes, sizeof(tm->spd_data.all_bytes));
 	}
 }
