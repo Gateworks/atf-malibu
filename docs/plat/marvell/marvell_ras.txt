@@ -1,0 +1,179 @@
+OcteonTX2 RAS implementation
+============================
+
+OcteonTX2 implements the ARMv8 RAS (Reliability, Availability & Serviceability)
+specification.
+
+This decouples the tracking of hardware exception events from any outage to
+the data being transferred, allowing a RAS-aware OS (such as Linux 4.18 onward)
+to handle the outage as it sees fit, by analysing the context in which the data
+is being used.
+
+Errors in memory/cache transactions are detected by the hardware and handled
+by the firmware.  These can be correctable (CE), uncorrectable unrecoverable (UEU) or
+uncorrectable recoverable (UER errors and result in a system notification.
+  CE error is single bit ECC error in memory or cache.
+  UEU error is double bit ECC error in secure memory region.
+  UER error is double bit ECC error in non-secure memory region.
+
+Note: Only MDC uncorrected errors(UE) are categorized by firmware as Uncorrected
+Unrecoverable(UEU) and Uncorrected Recoverable(UER) based on secure/non-secure
+attribute of the error address. Uncorrected errors from all other modules are
+treated as fatal in the current firmware implementation.
+
+The uncorrected errors are recorded and are made available to Linux upon subsequent
+boot (via the Boot Error Record Table - BERT).
+
+The firmware enables exceptions in relevant OcteonTX2 hardware units
+(MDC, MCC, LMC) and performs the following actions:
+
+- reports errors to serial console
+- logs errors to a standard error-logging framework which is understood by
+  RAS-aware OS software
+
+The error-logging framework consists of:
+  Generic Hardware Error Source (GHES)
+  Hardware Error Source Table (HEST)
+  Boot Error Record Table (BERT)
+
+  Please refer to the ACPI specification for details of these.
+
+The access procedure for GHES is well defined in a UEFI/ACPI platform,
+also OcteonTX2 embedded deployments will use ATF & DeviceTree rather than ACPI.
+
+Custom platform device in linux is provided to derive the GHES location
+from device tree, and forward CPER records, so the error indications flow to the
+standard processing of a kernel built with **MEMORY_FAILURE=y** option, which is
+notified in the standard fashion with an SDEI, and acts to contain uncorrectable
+errors, retire troublesome pages, and abort/restart impacted subsystems.
+
+The full RAS model is not available in kernels before 4.18, so in this case the
+error indications are passed to the processing of the legacy EDAC model.
+
+For details of the Device Tree "sdei-ghes" node describing this shared-memory
+communication area, see the following kernel document:
+  Documentation/devicetree/bindings/edac/marvell-sdei-ghes.txt
+
+To assist in verifying this reporting path, and any customer-developed code
+which continues the processing from the details provided by standard RAS & EDAC
+kernel interfaces, a set of SMC services is defined between kernels and ATF to
+force error injection via the LMC/MCC/MDC memory/cache interfaces, to model the
+response to a genuine outage.
+The API details of this OCTEONTX_EDAC SMC are outlined in ATF's
+  include/plat/marvell/octeontx/otx2/plat_ras.h
+
+The ability to inject multi-bit errors compromises system integrity, so is
+disabled in the regular DEBUG=0 ATF builds.
+
+Device Tree sdei-ghes implementation notes
+==========================================
+ATF and Linux share a common memory block (ring buffer) several CPER format
+error entries can fit into ring buffer (currently 4 records). In current
+firmware first mode error identification interrupt (MDC/MCC/LMC) is delivered
+to ATF. ATF writes error record into ring buffer head and triggers SDEI
+event callback. SDEI callback Linux registered at boot time beforehand.
+sdei-ghes callback move error record from ring buffer tail into Error Status
+Block (estatus) memory area, ESB block allocated for one error entry for HEST.
+Generic GHES driver makes periodic polling on Error Status Block and if ESB
+contains error data handler provide error presence notification and error clear.
+BERT Error Status Block size should correspond to ring buffer size to fit all BED
+Boot Error Data.
+
+ACPI sdei-ghes implementation notes
+===================================
+Setup Linux bootarg acpi=on.
+GHES requires Sdei.asl table to enable SDEI events. Hest.asl describe
+corresponding table layout and initialization values like polling
+interval, Error Status Block address (8byte), actual Error Status Block, and
+Ring buffer memory block. Bert.asl describe memory region for ring buffer and
+ESB memory area which fits all errors from ring to notify at boot time.
+
+Configurations to enable RAS Error Reporting
+============================================
+Enable module config EDAC_OCTEONTX:
+ARCH=arm64 CROSS_COMPILE=aarch64-marvell-linux-gnu- make menuconfig
+RAS=y
+EDAC=y
+ARM_SDE_INTERFACE=y
+ACPI_APEI_GHES=y 	/// If ACPI is enabled
+
+OcteonTX2 RAS GHES Error injection
+==================================
+
+Enable module config EDAC_OCTEONTX:
+ARCH=arm64 CROSS_COMPILE=aarch64-marvell-linux-gnu- make menuconfig
+RAS=y
+EDAC=y
+ARM_SDE_INTERFACE=y
+ACPI_APEI_GHES=y 	/// If ACPI is enabled
+OCTEONTX2_EINJ=y
+
+EDAC based interface for error injection from sysfs /sys/devices/system/edac/mc/mc0:
+
+EDAC SMC based interface for error injection exemple:
+-rw-r--r--    1 root     root         65536 Apr 19 20:15 address
+-rw-r--r--    1 root     root         65536 Apr 19 20:15 error_type
+--w-------    1 root     root         65536 Apr 19 20:17 inject
+
+echo 0x800000 > address
+echo 0x40000300    > error_type
+echo 0x1 > inject
+
+address - identify 'physical address' inject error at specified address
+			Recommended to use addresses from ASC0 secure region
+			1,3,5,7 - spesial case addresses
+			1 - predefined kernel data vma virtual address
+			5 - predefined kernel code virtual address
+			3 - predefined EL3 code address
+			7 - predefined EL3 data address
+
+error_type   - parameter describe control flags
+			bit 2..0	:  bit position to flip on poisoning write
+			bit 3		:  0 = SBE, 1 = DBE
+			bit 6..4	:  0 = DRAM, 1 = L1C, cache level to corrupt (L0 == DRAM)
+			bit 7		:  0 = D-cache,  1 = I-cache
+			bit 8		:  1 = read-back poisoned address in EL3
+			bit 9		:  1 = target address EL3-physical, not virtual
+			bit 30		:  1 = allow injection
+
+	Injecting DRAM/LMC Single Bit Error (SBE) ECC at physical address 0x800000
+	and read-back poisoned content immediately:
+	echo 0x800000 > address
+	echo 0x40000300 > error_type
+
+	Injecting DRAM/LMC Double Bit Error (DBE) ECC at physical address 0x800000
+	and read-back poisoned address immediately:
+	echo 0x800000 > address
+	echo 0x40000308 > error_type
+
+	Injecting DRAM/LMC Single Bit Error (SBE) ECC at physical address 0x800000
+	do not read-back immediately, ECC irq will be triggered after outside 
+	read happened:
+	echo 0x800000 > address
+	echo 0x40000200 > error_type
+
+
+	Inject D1 Cache Single Bit Error (SBE) error at address 0x800000:
+	echo 0x40000310 > error_type
+
+	Inject D1 Cache Double Bit Error (DBE) error at address 0x800000:
+	echo 0x40000318 > error_type
+
+	Inject I1 Cache Single Bit Error (SBE) error at address 0x800000:
+	echo 0x40000390 > error_type
+
+	Inject DRAM data SBE error at linux kernel predefined virtual address
+	echo 1 > address
+	echo 0x40000002 > error_type
+
+	Inject DRAM code SBE error at linux kernel predefined virtual address
+	echo 2 > address
+	echo 0x40000002 > error_type
+
+	Inject DRAM code SBE error at EL3 predefined address
+	echo 3 > address
+	echo 0x40000002 > error_type
+
+	Inject DRAM data SBE error at EL3 predefined address
+	echo 7 > address
+	echo 0x40000002 > error_type

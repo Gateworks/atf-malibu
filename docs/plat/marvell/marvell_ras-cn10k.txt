@@ -1,0 +1,119 @@
+Mavell CN10K RAS implementation
+===============================
+
+Marvell CN10K implements the ARMv8 RAS (Reliability, Availability & Serviceability)
+specification.
+
+This decouples the tracking of hardware exception events from any outage to
+the data being transferred, allowing a RAS-aware OS to handle the outage
+as it sees fit, by analyzing the context in which the data is being used.
+
+Errors in memory/cache transactions are detected by the hardware and handled
+by the firmware.  These can be correctable (CE), uncorrectable unrecoverable (UEU) or
+uncorrectable recoverable (UER errors and result in a system notification.
+  CE error is single bit ECC error in memory or cache.
+  UEU error is double bit ECC error in secure memory region.
+  UER error is double bit ECC error in non-secure memory region.
+
+Note: Only DSS uncorrected errors(UE) are categorized by firmware as Uncorrected
+Unrecoverable(UEU) and Uncorrected Recoverable(UER) based on secure/non-secure
+attribute of the error address. Uncorrected errors from all other modules are
+treated as fatal in the current firmware implementation.
+
+The firmware enables exceptions in relevant CN10K hardware units
+CORE (ARM processor), DSS (DRAM subsystem, DRAM Controller),
+TAD (Cache Tag And Data), MDC (Memory Diagnostic Controller)
+and performs the following actions:
+
+- Capture hardware description of the error
+- Convert the hardware description of the error to CPER (Common Platform Error Record) format
+- Collect CPER errors per hardware component ring buffer.
+- Make SDEI notification towards kerne driver
+- Kernel driver forwards CPER errors to EDAC framework for processing and logging.
+- BERT support is not supported for the CN10K platform
+
+The Device Tree "sdei-ghes" node describes shared-memory communication with firmware
+
+For layout details of the Device Tree "sdei-ghes" node see the following kernel document:
+Documentation/devicetree/bindings/edac/marvell-sdei-ghes.txt
+
+Device Tree sdei-ghes implementation notes
+==========================================
+ATF and Linux share a common memory block (ring buffer) several CPER format
+error entries can fit into the ring buffer. In current
+firmware first mode error identification interrupt is delivered
+to ATF. ATF writes error record into ring buffer head and triggers SDEI
+event callback. SDEI callback Linux registered at boot time beforehand.
+
+Configurations to enable RAS Error Reporting
+============================================
+Enable module config:
+EDAC_OCTEONTX=y
+RAS=y
+EDAC=y
+ARM_SDE_INTERFACE=y
+
+RAS EDAC Error injection DSS
+============================
+
+EDAC based interface for error injection from sysfs /sys/devices/system/edac/mc/mc0:
+
+EDAC SMC based interface for error injection exemple:
+-rw-r--r--    1 root     root         65536 Apr 19 20:15 address
+-rw-r--r--    1 root     root         65536 Apr 19 20:15 error_type
+--w-------    1 root     root         65536 Apr 19 20:17 inject
+
+address - Physical Address to corrupt
+error_type   - type of error SEC/DED and position of bit to corrupt
+	  29   - Set bit 29 for DSS error injection
+          0..7 - bit position to corrupt
+          8    - error type 0 = DED (double), 1 = SEC (single)
+
+Flip one bit at address 0x2fffff000
+===================================
+echo 0x2fffff000 > address
+echo 0x20000101 > error_type
+echo 1 > inject
+
+cd /sys/devices/system/edac/mc/mc0/ && echo 0x2fffff000 > address && echo 0x20000101 > error_type && echo 1 > inject
+
+Output example:
+EDAC MC0: 1 CE DMC0,R0,BG2,BA3,r49151,c960 on  (status:0x103 bank:3 row:49151 col:960 bit_pos:3 page:0x2ffff offset:0xf000 grain:1 syndrome:0x0 - single-bit ECC)
+
+1 CE - one correctable error
+DMC0 - DMC or channel 0
+R0 - Rank 0
+BG2 - Bank Group 2
+BA3 - Bank Address
+r49151 - DRAM row 49151
+c960 - DRAM collumn 960
+page:0x2ffff offset:0xf000 - physicall address 0x2fffff000, in current test system page offset 16 bits long.
+
+Flip two bits at address 0x2fffff000
+====================================
+setenv bootargs 'reboot_mode=cold'
+echo 1 > /sys/module/edac_core/parameters/edac_mc_panic_on_ue
+echo 0x2fffff000 > address
+echo 0x20000001 > error_type
+echo 1 > inject
+
+cd /sys/devices/system/edac/mc/mc0/ && echo 0x2fffff000 > address && echo 0x20000001 > error_type && echo 1 > inject
+
+Require cold reboot after injection.
+module/kernel parameter: edac_mc_panic_on_ue=1
+
+Output example:
+EDAC MC0: 1 UE DMC0,R0,BG2,BA3,r49151,c960 on  (status:0x10003 bank:3 row:49151 col:960 page:0x2ffff offset:0xf000 grain:1 - multi-bit ECC)
+
+
+RAS EDAC Interface MDC (Memory Diagnostic Controller)
+=====================================================
+
+/sys/devices/system/edac/mdc/
+
+
+RAS EDAC Interface TAD (LLC last level cache)
+=============================================
+
+/sys/devices/system/edac/llc/
+

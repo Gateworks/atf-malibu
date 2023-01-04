@@ -1,0 +1,1413 @@
+RPM support in CN10K firmware
+=============================
+
+1 Overview
+----------
+
+This document provides details on high level design of RPM (Reconciliation,
+Physical and MAC Sub-Layers Processing Unit) software implementation in ATF
+and the interface data structures used for ATF, U-Boot, and Kernel communication.
+
+----
+
+2 Device Tree
+-------------
+
+DT properties are mainly needed by ATF to configure the ports accordingly.
+
+
+2.1 RPM LMAC node
+^^^^^^^^^^^^^^^^^^^
+
+For ethernet nodes, each LMAC node needs to be represented in the following
+format for all supported mode in the specific RPM.
+
+EBF DT
+^^^^^^^^
+Set the PORTM-MODE for the specified port. The format of the key is:
+        PORTM-MODE.P%d = "MODE"
+
+        Parameters:
+                P%d: Specifies the port number to configure. Each port can have different
+                modes, 1-LANE/2-LANE/4-LANE as described below.
+
+Each board's DTS in EBF has the supported ethernet modes for the user to configure one
+of the modes.
+
+Linux DT
+^^^^^^^^
+
+.. code-block:: none
+
+   /*
+    * Syntax for sub nodes of RPM nodes as listed below to be more
+    * complaint with standard device tree specifications for ethernet nodes
+    *   - ethernetAN:mode@X for RPM0,
+    *   - ethernetBN:mode@X for RPM1,
+    *   - ethernetCN:mode@X for RPM2.
+    * If adding a new sub node for RPM in DT, similar syntax should
+    * be followed.
+    */
+   rpm@0 {	/* RPM index */
+      ethernetA0: 10g@00 { 	/* RPM index, LMAC index */
+         reg = <0>;		/* Lane index */
+      };
+      ....
+   }
+
+The parser will remove unused LMAC nodes from the Linux device tree, based on the mode configured in the
+given RPM. The qlm-mode attribute is not required anymore and is ignored by the parser.
+
+For each of the mode configured for a specific PORTM (GSERM) in EBF DT, equivalent entry for the mode
+mapped to RPM also to be specified in Linux DT for each platform. These nodes will have the corresponding
+SFP slots/PHY info populated.
+
+=====================   =============================
+EBF DT PORTM-MODE 	    Equivalent Linux DT node name
+=====================   =============================
+XFI/SFI					10g
+25GAUI_C2C/25GAUI_C2M   		25g
+1000BASE_X				sgmii
+SGMII					sgmii
+100GAUI_2				100g
+100GAUI_4				100g
+50GAUI_4				50g
+XLAUI					40g
+=====================   =============================
+
+
+2.2 portm@<x> node
+^^^^^^^^^^^^^^^^^^
+
+For ports configured to CPRI mode, each port is represented in the following format:
+
+Linux DT
+^^^^^^^^
+
+.. code-block:: none
+
+   portm@0 {	/* PORTM index */
+      ...
+   };
+
+Currently portm node may contain information about SFP/QSFP slots (see Examples section below).
+This is mandatory if SFP management is to be enabled for ports configured to CPRI mode.
+The parser will remove unused portm nodes from the Linux device tree, after parsing is done.
+
+
+2.3 Number of VFs/MSIX
+^^^^^^^^^^^^^^^^^^^^^^
+Number of VFs/MSIX property for each sub-node defined to be used by RVU driver::
+
+   // Example:
+   "num-rvu-vfs"
+   "num-msix-vec"
+
+This is optional. If not, default number of VFs and MSIX per VF are assigned.
+
+2.4 Autonegotiation
+^^^^^^^^^^^^^^^^^^^
+
+For AN to be disabled, the sub-node should have following property
+``“cn10k,sgmii-disable-autoneg"``.
+
+In order to set speed when autonegotion is disabled, the sub-node should have
+following property: ``“cn10k,sgmii-set-speed=<val>"``
+
+Example of disabling autonegotiation and setting speed to 100M:
+
+.. code block:: none
+
+   ethernetB5: qsgmii@13 {
+       reg = <3>;
+       cn10k,sgmii-disable-autoneg;
+       cn10k,sgmii-set-speed=<100>;
+   };
+
+.. Note::
+This is applicable only for SGMII/QSGMII modes. For 1000 BASE-X, if PHY is
+not present, AN is by default disabled.
+
+2.5 FEC Configuration
+^^^^^^^^^^^^^^^^^^^^^
+
+FEC configuration for each LMAC (Applicable for >=10G speeds) can be configured from
+EBF DT in the following format:
+
+	   PORTM-FEC.P%d = "N";
+
+           "Possible FEC values of <N>:"
+            "    0: No FEC (Default)\n"
+            "    1: BASE-R/Firecode FEC\n"
+            "    2: RS-FEC\n"
+            "    3: BASE-R & RS-FEC (KR/CR modes only)\n"
+
+If this attribute is not specified, FEC will be disabled.
+
+.. Note::
+
+   If user wants to disable FEC, specify the value as 0 in the above property
+
+2.6 PHY MDIO bus
+^^^^^^^^^^^^^^^^
+
+PHY should have the details of which MDIO bus it is connected to and its
+address and the compatible string should include the PHY name and/or the
+CLAUSE string (if the PHY complaints with generic C22/C45 standard)
+PHY (example PHY info):
+
+.. code-block:: none
+
+   mdio0@87e005003800 {
+       sgmii00: sgmii00 {
+           reg = <0x0>;
+           compatible = "marvell,88e1240", "ethernet-phy-ieee802.3-c22";
+       };
+   };
+
+
+2.7 The 'mdio-in-kernel' attribute
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The new attribute 'mdio-in-kernel' was added to mark that given MDIO bus
+shall be preserved in the device tree to be used by Linux.
+
+In case attribute is present, ATF will leave MDIO bus node as it is and
+the PHYs on that bus will not be managed by ATF.
+
+In case attribute is *not* present, it means MDIO bus along with the PHYs
+subnodes will be managed in ATF and they will be trimmed from Linux dts.
+
+**'mdio-in-kernel' attribute example:**
+
+.. code-block:: none
+
+   mdio0@87e005003800 {
+       mdio-in-kernel;
+       phy40: ethernet-phy@40 {
+           reg = <0x00> ;
+           compatible = "marvell,88x3310",
+                   "ethernet-phy-ieee802.3-c45";
+       };
+   };
+
+
+2.8 PHY handle
+^^^^^^^^^^^^^^
+
+The corresponding LMAC node depending on the board design, should have
+the handle to PHY:
+
+.. code-block:: none
+
+   ethernetA0: sgmii@00 {
+       reg = <0>;
+       num-rvu-vfs = <8>;
+       num-msix-vec = <210>;
+       phy-handle = <&sgmii00>;
+   };
+
+
+2.9 cn10k,reg-init attribute
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+New attribute 'cn10k,reg-init' was added, which is an optional data
+block in PHY's device tree node containing list of MDIO transactions
+to be performed as a part of PHY initialization.
+The syntax is::
+
+	phy0: phy@0 {
+		...
+		cn10k,reg-init = <devad reg mask val wait_ms>,
+				 <...>,
+				 <devad reg mask val wait_ms>;
+	}
+
+	devad:		device number (valid only for clause 45)
+	reg:		register address
+	mask:		mask to be applied on the current register value
+	val:		value to be written to the register
+	wait_ms:	delay in milliseconds after the MDIO transaction
+
+
+2.10 The 'twsi-in-kernel' attribute
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Regarding management of SFP/QSFPs, the new attribute, 'twsi-in-kernel',
+was added to mark that given twsi bus is to be managed by Linux kernel.
+It is *only* applicable for twsi buses related to sfp/qsfp management
+(the ones that sfps/qsfps are attached to via i2c muxes/switches and
+gpio expanders).
+
+In case attribute is present, ATF will skip parsing the twsi bus node
+and all its i2c muxes/switches/gpio expanders subnodes, also they
+will not be removed from dts tree, to make them available for Linux.
+
+In case attribute is *not* present, it means that the twsi bus along
+with its muxes / expanders subnodes will by managed in ATF and they
+will be removed from dts tree right after ATF is done with parsing.
+
+
+**'twsi-in-kernel' attribute example:**
+
+.. code-block:: none
+
+&i2c_9_3 {
+        twsi-in-kernel;
+        mux@70 {
+                compatible = "nxp,pca9547";
+                reg = <0x70>;
+                #address-cells = <1>;
+                #size-cells = <0>;
+
+                sfp_0_i2c: i2c@0 {
+                        #address-cells = <1>;
+                        ...
+                        sfp0_eeprom: eeprom@50 {
+                                compatible = "atmel,24c01";
+                                reg = <0x50>;
+                        };
+                };
+
+                i2c@1 {
+                        #address-cells = <1>;
+                        ...
+                        qsfp1_eeprom: eeprom@50 {
+                                compatible = "atmel,24c01";
+                                reg = <0x50>;
+                        };
+                };
+
+        ...
+        gpio_exp_3_20: gpio@20 { ... };
+        gpio_exp_3_22: gpio@22 { ... };
+};
+
+/ {
+        sfp_0: sfp-slot@0 {
+                compatible = "sff,sfp";
+		i2c-bus = <&sfp_0_i2c>;
+                /* format : gpio_controller phandle, pin, flags
+                 * flags : polarity inversion
+                 */
+                los-gpios = <&gpio_exp_3_20 2 0>;
+                mod-def0-gpios = <&gpio_exp_3_20 3 0>;
+                ...
+		eeprom = <&sfp0_eeprom>;
+        };
+
+        qsfp_1: qsfp-slot@1 {
+                compatible = "qsfp-slot";
+                /* format : gpio_controller phandle, pin, flags
+                 * flags : polarity inversion
+                 */
+                mod_sel = <&gpio_exp_3_22 2 0>;
+                mod_present = <&gpio_exp_3_22 3 0>;
+                ...
+		eeprom = <&qsfp1_eeprom>;
+        };
+};
+
+
+2.11 Examples
+^^^^^^^^^^^^^
+
+**SFP (example slot info):**
+
+.. code-block:: none
+
+   sfp_1: sfp-slot@1 {
+                compatible = "sff,sfp";
+		i2c-bus = <&sfp_1_i2c>;
+                /* format : gpio_controller phandle, pin, flags
+                 * flags : polarity inversion
+                 */
+                los-gpios = <&gpio0 4 0>;
+                mod-def0-gpios = <&gpio0 5 0>;
+                tx-fault-gpios = <&gpio0 6 0>;
+                tx-disable-gpios = <&gpio0 7 0>;
+
+                /* power in mW supported by board for SFP
+                 * levels : 1000, 1500, 2000mW)
+                 */
+                maximum-power-milliwatt = <1500>;
+                eeprom = <&sfp1_eeprom>;
+   };
+
+**QSFP (example slot info):**
+
+.. code-block:: none
+
+   qsfp_1: qsfp-slot@1 {
+              compatible = "qsfp-slot";
+              /* format : gpio_controller phandle, pin, flags
+               * flags : polarity inversion
+               */
+              mod_sel = <&gpio1 4 0>;
+              mod_present = <&gpio1 5 0>;
+              reset = <&gpio_15_0 48 0>; /* direct connection to SoC */
+              lowpow_mode = <&gpio1 6 0>;
+              int = <&gpio1 7 0>;
+              eeprom = <&qsfp1_eeprom>;
+              /* power in mW supported by board for QSFP
+               * levels : 1500, 2000, 2500, 3500, 4000, 4500, 5000 mW)
+               */
+              max_power = <3500>;
+   };
+
+.. Note::
+
+   Slot info needs to be mapped to LMAC nodes for ports configured to ethernet mode
+   or to portm nodes for ports configured to CPRI - based on the board design.
+
+.. code-block:: none
+
+   rpm@0 {
+     100g@00 {
+         reg = <0>;
+         qsfp-slot = <&qsfp_2>;
+         phy-handle = <&phy0>;
+     };
+   };
+
+   portm@10 {
+     sfp-slot = <&sfp_1>;
+   };
+
+
+**PHY's cn10k,reg-init attribute (example):**
+
+   phy0: phy@0 {
+       reg = <0x0>;
+       compatible = "marvell,88x3310",
+                    "ethernet-phy-ieee802.3-c45";
+       cn10k,reg-init =
+           <31 0xf001 0 0xe01e 100>,
+           <31 0xf000 0 0x30ca 0>,
+           <31 0x8c04 0 0x1c00 0>,
+           <31 0x8c05 0 0x0000 0>,
+           <31 0x8c00 0 0x1383 0>,
+           <31 0x8c01 0 0x0000 0>,
+           <31 0x8c02 0 0x1fff 0>,
+           <31 0x8c03 0 0x0000 0>,
+           <31 0x8e02 0 0x1fff 0>,
+           <31 0x8e03 0 0x0000 0>,
+           <31 0x8000 0 0x0f3f 0>,
+           <31 0x8001 0 0x7dd0 0>,
+           <31 0x800e 0 0x1b0a 0>,
+           <31 0x800f 0 0x0000 0>,
+           <31 0x80a2 0 0x0001 0>,
+           <31 0x80a3 0 0x0000 0>,
+           <31 0xf020 0 0x0050 0>,
+           <31 0xf021 0 0x00b0 0>,
+           <31 0xf022 0 0x0128 0>,
+           <31 0xf023 0 0x0131 0>;
+   };
+
+
+**GPIO expanders info (example):**
+
+.. code-block:: none
+
+   gpio0: gpio-i2c@0 {
+       #gpio-cells = <2>;
+       compatible = "nxp,pca8574";
+       gpio-controller;
+       reg = <0x22>;
+       ngpios = <8>;
+   };
+
+**I2C switch info (example):**
+
+.. code-block:: none
+
+   switch@e0 {
+       #address-cells = <1>;
+       #size-cells = <0>;
+       compatible = "nxp,pca9548";
+       reg = <0xE0>;
+       i2c@0 {
+           #address-cells = <1>;
+           #size-cells = <0>;
+           reg = <0>;
+           sfp0_eeprom: eeprom@50 {
+               compatible = "atmel,24c01";
+               reg = <0x50>;
+           };
+
+       i2c@1 {
+           #address-cells = <1>;
+           #size-cells = <0>;
+           reg = <1>;
+       };
+   };
+
+
+
+----
+
+3 ATF RPM Interface
+-------------------
+
+3.1 Boot
+^^^^^^^^
+
+3.1.1 DT Parser
+~~~~~~~~~~~~~~~
+
+Based on the GSERM LANE mode configuration by EBF (via EBF DT) mode is obtained for each port (PORTM).
+It gets mapped against RPM instance and checked against the Linux device tree to
+map the info with each LMAC of RPM.
+
+.. code-block:: c
+
+   PORTM-MODE.P% = "mode"
+
+Additional properties of LMAC configuration are parsed from Board DT/Linux DT
+specific to each board and updated in global board config structure per LMAC.
+
+3.1.2 GSERM
+~~~~~~~~~~~
+ATF initializes GSERM for the mode configured as per PORTM configuration(EBF DT).
+GSERM firmware is also downloaded to PMEM as part of initialization
+
+3.1.3 RPM Init
+~~~~~~~~~~~~~~~
+
+During PCIe scan (BL2), RPM init callback is called for each RPM.
+
+This callback initializes the LMACs based on the info retrieved from board config
+structure, and programs LMAC count for RPM and LMAC type for each LMAC.
+
+Also, one time configuration based on LMAC type like back pressure (RX_BP_ON CSR), TSU configuration are done.
+
+.. Note::
+
+   RPM device is hidden from non-secure world if the particular RPM is not
+   configured for any mode in EBF.
+
+
+3.1.4 Interrupt Enable
+~~~~~~~~~~~~~~~~~~~~~~
+
+The MSIX interrupt provided for SW purpose in RPM is used for communication
+between ATF and kernel.
+Firmware notifies kernel about any asynchronous events via this interrupt
+``RPM(0..4)_CMR(0..3)_SW_INT``.
+This is chosen as communication method for all CN10K platforms.
+
+3.2 Run Time Services
+^^^^^^^^^^^^^^^^^^^^^
+
+ATF supports custom framework based on SCRATCH CSRs to handle requests related to ethernet MAC.
+When BL31 boots, system timer is started and run periodically every 1 sec to
+handle command requests from (U-boot/Kernel) and process the requests.
+
+
+3.2.1 ECP BL1
+^^^^^^^^^^^^^
+
+ECP is MIPS core part of CPC (Control Processors Cluster) for managing the ethernet related link functions.
+
+ECP runs untrusted software and booted by SCP on receiving the SCMI
+message(SCMI_CAVM_LINK_CONFIG_MSG) from ATF. This SCMI message will have the shared memory
+address used for communication between AP and ECP.
+
+There are 2 tasks created, one for handling/processing requests from ATF (Uses Shared memory -
+ETH_LINK_SHMEM_BASE for handshaking).
+
+ECP BL1 handles the following link requests from ATF and configures RPM block as per the HRM
+(recommended sequence)
+	ECP_LINK_REQ_BRINGUP
+        ECP_LINK_REQ_BRINGDOWN
+        ECP_LINK_REQ_MODE_CHANGE
+        ECP_LINK_REQ_FEC_CHANGE
+
+Other task to handle link management (continuous polling on each LMACs to monitor the link status). This task
+yields to task1 as processing requests from ATF is higher priority.
+
+3.2.2 Secure Timer
+^^^^^^^^^^^^^^^^^^
+
+One timer is configured to process requests from Kernel/U-boot.
+
+second timer to monitor the link status from ECP BL1 and update kernel/u-boot on link change event.
+
+Time period of these 2 timers can be modified via Linux device tree. Default time period is 1 sec
+
+Minimum time period : 200 ms
+
+.. code-block:: none
+
+  / {
+       eth_poll_timer {
+           cmd_timer = <1000>;
+           link_mgmt_timer = <1000>;
+       };
+  };
+
+3.2.3 RPM INTF Framework
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The interface for these services as well as the commands and events are described below :
+
+.. _SCRATCHX_CSRs:
+
+3.2.3.1 SCRATCHX CSRs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``RPM(0..4)_CMR(0..3)_SCRATCH(0..1)`` CSRs are available for SW purpose on
+OCTEON CN10K FAMILY of SoCs. These CSRs are primarily used as the communication
+method between ATF and non-secure SW.
+
+* ``RPM_CMRX_SCRATCHX(RPM)(LMAC)(0)`` – STATUS REGISTER
+
+* ``RPM_CMRX_SCRATCHX(RPM)(LMAC)(1)`` – COMMAND REGISTER
+
+Please refer to ``include/drivers/marvell/eth_intf.h`` in the ATF source tree
+for the interface definitions.
+
+3.2.4 Interface from U-Boot/Kernel to ATF
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``RPM_CMRX_SCRATCHX[rpm][lmac][1]`` is reserved for this purpose for each LMAC.
+
+.. Note::
+
+   * User can post the requests only if the “ack” bit is clear
+     (and default ownership for command register is with non-secure SW).
+
+   * After writing the command ID, non-secure SW should set the ownership
+     to ``ETH_OWN_FIRMWARE`` for firmware to process the command.
+
+   * Firmware will set the ownership back to ``ETH_OWN_NON_SECURE_SW``
+     after processing the command and triggers the interrupt.
+
+   * User should clear the interrupt for any command response along with
+     clearing ack/releasing the ownership
+
+Various commands may be exchanged with ATF as described below. All the commands
+are per LMAC.
+
+Generic structure for all commands::
+
+  struct eth_cmd {			/* start from bit 2 */
+        uint64_t reserved1:2;		/* reserved for the framework use only */
+        uint64_t id:6;			/* eth_request_id (referred below as 'REQUEST ID') */
+        uint64_t reserved2:56;		/* Used for passing command specific parameters */
+  };
+
+3.2.4.1 GET FW VER
+""""""""""""""""""
+
+Gets the firmware interface version.
+
+Parameters to be sent:
+
+* REQUEST ID – ``ETH_CMD_GET_FW_VER`` (1)
+* Major/Minor version number returned
+
+3.2.4.2 GET FW SH MEM BASE
+""""""""""""""""""""""""""
+
+Fixed memory is assigned in DRAM to share ethernet related firmware data with non-secure applications (U-boot/Linux kernel). This includes the MAC address for each PFas well.
+
+Parameters to be sent:
+
+* REQUEST ID – ``ETH_CMD_GET_FWD_BASE`` (15)
+* Returns the start of shared memory address in DRAM
+
+3.2.4.3 LINK BRING UP
+"""""""""""""""""""""
+
+Initiated when ethernet interfaces are to be brought up.
+
+Parameters to be sent:
+
+* REQUEST ID – ``ETH_CMD_LINK_BRING_UP`` (5)
+
+* Cmd arguments
+struct cgx_link_bringup_args {         /* start from bit 8 */
+        uint64_t reserved1:2;
+        uint64_t id:6;			/* = 5 (ETH_CMD_LINK_BRING_UP) */
+        uint64_t timeout:14;            /* in ms */
+        uint64_t reserved2:42;
+
+* As part of request processing, ATF sends ECP_LINK_REQ_BRINGUP request to ECP to bring up the link
+
+Return the link state info (by writing to ``RPM_CMRX_SCRATCHX[rpm][lmac][0]``).
+
+Any errors will be set in the ``RPM_CMRX_SCRATCHX[rpm][lmac][0]``.
+
+**Code Flow**\ :
+
+* RPM link bring up is done based on LMAC type
+
+* If PHY is present:
+
+  * Check the link status
+  * Update SM with the link status for ECP to use this info to configure RPM
+
+* If SFP/QSFP slot is present:
+
+  * Read the module status in SM updated by MCP.
+  * If module is present and EEPROM data is available, check the module capabilities
+    against user options.
+  * If module capabilities doesn't match user options, error is thrown
+  * Also, update Module status info in SM for ECP
+
+* If RPM configuration succeeds, current link status will be set
+
+* If RPM configuration fails, both error type and current link status will be set
+
+"timeout" parameter enables user to pass the link timeout (in ms) to limit the link bring up timeout
+(Same timeout is used for mode change/FEC change commands execution)
+
+ATF by default waits (without blocking the core) upto 4s to bring the link up. If the link timeout
+parameter is passed, ATF uses this parameter if it is less than 4s.
+
+Note on preference:
+
+1st preference : Timeout parameter passed via LINK_TIMEOUT command
+2nd preference : Timeout parameter passed via LINK_BRINGUP command
+If both are not specified, default timeout is 4s
+
+
+3.2.4.4 LINK BRING DOWN
+"""""""""""""""""""""""
+
+Initiated when ethernet interfaces are brought down.
+
+Parameters to be sent:
+
+* REQUEST ID - ``ETH_CMD_LINK_BRING_DOWN`` (6)
+
+As part of request processing, ATF sends ECP_LINK_REQ_BRINGDOWN to ECP bring down the link
+
+3.2.4.5 INTERNAL LOOPBACK
+"""""""""""""""""""""""""
+
+Enables or disables internal loopback.
+
+Parameters to be sent:
+
+* REQUEST ID - ``ETH_CMD_INTERNAL_LBK`` (7)
+* cmd_args.enable = 1 to enable loopback
+
+or
+
+* cmd_args.enable = 0 to disable loopback
+
+3.2.4.6 EXTERNAL LOOPBACK
+"""""""""""""""""""""""""
+
+Enables or disables external loopback.
+
+Parameters to be sent:
+
+
+* REQUEST ID - ``ETH_CMD_EXTERNAL_LBK`` (8)
+* cmd_args.enable = 1 to enable loopback
+
+or
+
+* cmd_args.enable = 0 to disable loopback
+
+.. Note::
+
+   To enable loopback, sequence should be loopback to be enabled first followed by LINK_BRING_UP request
+
+3.2.4.7 INTF SHUTDOWN
+"""""""""""""""""""""
+
+When U-Boot boots to kernel, U-Boot should send the below
+command to ATF - ``ETH_CMD_INTF_SHUTDOWN`` (12)
+
+This command should be sent when RPM driver is unloaded in kernel as well. This
+command is applicable for all active RPM and LMACs.
+
+As result:
+
+* ATF brings down the link for active links
+  (for which ever LMAC, LINK UP request was sent)
+* Clears the ``SCRATCHX`` CSRs (but only sets the ack bit and users should
+  not check for any response for this command as the status bits are cleared).
+* Also clear the interrupt when releasing the ownership
+
+3.2.4.8 FEC CHANGE
+""""""""""""""""""
+
+In addition to FEC type allowed to be mentioned in EBF DT, User is allowed
+to change the FEC type dynamically from u-boot commands or kernel via ethtool.
+This command - ``ETH_CMD_SET_FEC`` (19) needs to be sent to ATF with the required FEC
+type from kernel upon execution of ethtool commands.
+
+As result, ATF:
+
+* Validates if FEC change is allowed for the particular mode and if the FEC
+  type requested matches with the expected PCS type. If not, returns error.
+* Link status is updated with the new FEC if RPM is successfully configured.
+* Status is updated with ETH_STAT_FAIL or ETH_STAT_SUCCESS info
+
+Optionally, ETH_CMD_GET_SUPPORTED_FEC command can be sent to ATF to know the
+supported FEC types. But, by default, supported FEC types are updated in
+shared FW data memory
+
+3.2.4.9 GET LINK STATUS
+"""""""""""""""""""""""
+
+This command can be called any time when RPM LMAC's link status needs to be
+obtained.
+
+* REQUEST ID – ``ETH_CMD_GET_LINK_STS`` (4)
+* Response - RPM SCRATCHX(0) is updated with below struct type eth_lnk_sts_s
+
+.. code-block:: c
+
+  /* LINK speed types */
+  enum eth_link_speed {
+        ETH_LINK_NONE,
+        ETH_LINK_10M,
+        ETH_LINK_100M,
+        ETH_LINK_1G,
+        ETH_LINK_2HG,   /* 2.5 Gbps */
+        ETH_LINK_5G,
+        ETH_LINK_10G,
+	ETH_LINK_20G,
+        ETH_LINK_25G,
+        ETH_LINK_40G,
+        ETH_LINK_50G,
+       	ETH_LINK_100G,
+	ETH_LINK_MAX,
+  };
+
+  typedef enum {
+        ETH_MODE_SGMII_BIT = 0,
+        ETH_MODE_1000_BASEX_BIT,
+        ETH_MODE_QSGMII_BIT,
+        ETH_MODE_10G_C2C_BIT,
+        ETH_MODE_10G_C2M_BIT,
+        ETH_MODE_10G_KR_BIT,		/* = 5 */
+        ETH_MODE_20G_C2C_BIT,
+        ETH_MODE_25G_C2C_BIT,
+        ETH_MODE_25G_C2M_BIT,
+        ETH_MODE_25G_2_C2C_BIT,
+        ETH_MODE_25G_CR_BIT,		/* = 10 */
+        ETH_MODE_25G_KR_BIT,
+        ETH_MODE_40G_C2C_BIT,
+        ETH_MODE_40G_C2M_BIT,
+        ETH_MODE_40G_CR4_BIT,
+        ETH_MODE_40G_KR4_BIT,		/* = 15 */
+        ETH_MODE_40GAUI_C2C_BIT,
+        ETH_MODE_50G_C2C_BIT,
+        ETH_MODE_50G_C2M_BIT,
+        ETH_MODE_50G_4_C2C_BIT,
+        ETH_MODE_50G_CR_BIT,		/* = 20 */
+        ETH_MODE_50G_KR_BIT,
+        ETH_MODE_80GAUI_C2C_BIT,
+        ETH_MODE_100G_C2C_BIT,
+        ETH_MODE_100G_C2M_BIT,
+        ETH_MODE_100G_CR4_BIT,		/* = 25 */
+        ETH_MODE_100G_KR4_BIT,
+	ETH_MODE_50GAUI_2_C2C_BIT,
+	ETH_MODE_50GAUI_2_C2M_BIT,
+	ETH_MODE_50GBASE_CR2_C_BIT,
+	ETH_MODE_50GBASE_KR2_C_BIT,	/* = 30 */
+	ETH_MODE_100GAUI_2_C2C_BIT,
+	ETH_MODE_100GAUI_2_C2M_BIT,
+	ETH_MODE_100GBASE_CR2_BIT,
+	ETH_MODE_100GBASE_KR2_BIT,
+	ETH_MODE_SFI_1G_BIT,		/* = 35 */
+	ETH_MODE_25GBASE_CR_C_BIT,
+	ETH_MODE_25GBASE_KR_C_BIT,	/* = 37 */
+	/* Add new ethernet modes here */
+	ETH_MODE_MAX_BIT,
+  } eth_mode_t;
+
+  struct eth_lnk_sts_s {
+        uint64_t reserved1:9;
+        uint64_t link_up:1;
+        uint64_t full_duplex:1;
+        uint64_t speed:4;	/* eth_link_speed */
+        uint64_t err_type:10;
+        uint64_t an:1;		/* Current AN state : enabled/disabled */
+        uint64_t fec:2;		/* Current FEC type if enabled, if not 0 */
+        uint64_t lmac_type:8;	/* LMAC type: applicable only for CN10K */
+        uint64_t mode:8;	/* eth_mode_t enum integer value */
+        uint64_t reserved2:20;
+  };
+
+3.2.4.10 MODE CHANGE
+"""""""""""""""""""""
+
+This command supports changing the ethernet port's current speed to
+different speed. Following are the parameters expected:
+
+.. code-block:: c
+
+  /* command argument to be passed for cmd ID - ``ETH_CMD_MODE_CHANGE`` (11) */
+  struct eth_mode_change_args {
+       uint64_t reserved1:2;
+       uint64_t id:6;		/* = 11 (ETH_CMD_MODE_CHANGE) */
+       uint64_t speed:4;	/* eth_link_speed enum */
+       uint64_t duplex:1;	/* 0 - full duplex, 1 - half duplex */
+       uint64_t an:1;		/* 0 - disable AN, 1 - enable AN */
+       uint64_t use_portm_idx:1; /* set this flag if the target PORTM# for the mode change is not
+                                  * identified via SCRATCH register that was used for sending the
+                                  * command, but via portm_idx field below - in which case mode
+                                  * change can be issued using any rpm/lmac SCRATCH register
+                                  * (required for BPHY ports)
+                                  */
+       uint64_t portm_idx:5;	/* target PORTM# for mode change command (required for BPHY ports) */
+       /* This field categorize the mode ID range to accommodate more modes.
+        * To specify mode ID range of 0 - 41, this field will be 0.
+        * To specify mode ID range of 42 - 83, this field will be 1 and so.
+        * mode ID will be still mentioned as 1 << (0 - 41). But the mode_group_idx
+        * decides the actual mode range
+        */
+       uint64_t mode_group_idx:2; /* 0 or 1 = Ethernet, 2 = CPRI modes group */
+       uint64_t mode:42;	/* (1 << eth_mode_t) or (1 << eth_cpri_mode_t)
+                                 * depending on the mode_group_index
+                                 */
+  };
+
+.. Note::
+
+   When requesting mode change to ethernet mode, mode_group_idx should be set to 0 and
+   the mode mask to (1 << eth_mode_t). For CPRI mode requests mode_group_idx should be
+   set to 2 and the mode mask to (1 << eth_cpri_mode_t).
+   RFOE interfaces (or CPRI capable) should be addressed by using portm_idx field (setting
+   also the use_portm_idx to 1). In that case command can be issued using SCRATCH register
+   corresponding to any of rpm/lmac.
+
+ATF generates interrupt as a response to this command,
+
+* evt_type : ``ETH_EVT_CMD_RESP``
+* cmd ID : ``ETH_CMD_MODE_CHANGE``
+* cmd status: Either ``ETH_STAT_SUCCESS``\ /\ ``ETH_STAT_FAIL``
+
+If the command status is successful, ATF updates the link
+status also in the response structure
+
+**NOTE:** Based on current PORTM configuration, ATF decides whether to allow the change.
+
+3.2.4.11 GET_PORT_MODE
+"""""""""""""""""""""""
+
+This command is used for querying mode of the given port by providing its PORTM# index.
+It is mainly targeted for BPHY connected ports, which are not covered by the standard
+GET_LINK_STATUS command, but can be used for NIX ports as well.
+Following are the parameters expected:
+
+.. code-block:: c
+
+  /* command argument to be passed for cmd ID - ``ETH_CMD_GET_PORT_MODE`` (44) */
+  struct eth_get_port_mode_args {
+       uint64_t reserved1:2;
+       uint64_t id:6;			/* = 44 (ETH_CMD_GET_PORT_MODE) */
+       uint64_t portm_idx:5;
+       uint64_t reserved2:51;
+  };
+
+
+ATF generates interrupt as a response to this command,
+
+* REQUEST ID – ``ETH_CMD_GET_PORT_MODE``
+* Response - RPM SCRATCHX(0) is updated with below struct type eth_get_port_mode_s
+
+.. code-block:: c
+
+  typedef enum {
+       MODE_GROUP_ETH,			/* Groups 0 and 1 are reserved for ethernet */
+       MODE_GROUP_CPRI = 2,
+  } mode_group_t;
+
+  struct eth_get_port_mode_s {
+       uint64_t reserved1:9;
+       uint64_t mode_group_idx:2;	/* mode_group_t */
+       uint64_t mode:6;			/* eth_mode_t or eth_cpri_mode_t depending on
+					 * the mode_group_idx
+					 */
+       uint64_t reserved2:47;
+  };
+
+3.2.4.12 ECP_DUMP_STATE
+"""""""""""""""""""""""
+Debugging feature that triggers dumping a history of ECP State Machine transitions for a given PORTM.
+It requires enabling following ATF Module Tracing option in EBF menu: "I) networking ECP state machine".
+
+Command structure:
+
+.. code-block:: c
+
+* REQUEST ID – ``ETH_CMD_ECP_DUMP_STATE`` (45)
+
+  struct eth_ecp_dump_state_args {
+        uint64_t reserved1:2;
+        uint64_t id:6;			/* = 45 (ETH_CMD_ECP_DUMP_STATE) */
+        uint64_t portm_idx:8;		/* PORTM index for which ECP state transitions are requested */
+        uint64_t lmac_id:4;		/* only required for multi-lmac ports */
+        uint64_t reserved2:44;
+  };
+
+3.2.4.13 PTP
+"""""""""""""
+
+Enables or disables 1-step PTP
+
+Parameters to be sent:
+
+* REQUEST ID - ``ETH_CMD_SET_PTP_MODE`` (34)
+* cmd_args.enable = 1 to enable PTP
+
+or
+
+* cmd_args.enable = 0 to disable PTP
+
+3.2.4.14 LINK_TIMEOUT
+"""""""""""""""""""""
+Enables user to pass the link timeout (in ms) to limit the link bring up timeout (Same timeout is
+used for LINK bring up/mode change/FEC change)
+
+ATF by default waits (without blocking the core) upto 4s to bring the link up. If the link timeout
+parameter is passed, ATF uses this parameter if it is less than 4s.
+
+Parameters to be sent:
+
+* REQUEST ID - ``ETH_CMD_LINK_TIMEOUT`` (43)
+* cmd arguments
+struct cgx_link_bringup_args {         /* start from bit 8 */
+        uint64_t reserved1:2;
+        uint64_t id:6;			/* = 43 (ETH_CMD_LINK_TIMEOUT) */
+        uint64_t timeout:14;            /* in ms */
+        uint64_t reserved2:42;
+};
+
+This parameter gets reset when ETH_CMD_LINK_BRING_DOWN is sent by user.
+
+Note: The timeout parameter passed by user via LINK_TIMEOUT have a higher preference compared to link timeout
+parameter passed via LINK_BRINGUP command.
+
+3.2.4.15 SerDes Tx Tuning
+"""""""""""""""""""""""""
+This command ETH_CMD_TUNE_SERDES is used to tune SerDes TX parameters (tx_pre2, tx_pre, tx_main and tx_post). The tx tuning parameters are applied to all lanes in the specified portm_idx.
+Non-zero values provided for tx_pre2, tx_pre or tx_post will be threated as negative as only negative or zero values are valid as pre2, pre and post Tx Eq settings.
+
+Following are the parameters expected:
+
+.. code-block:: c
+
+  /* command argument to be passed for cmd ID - ``ETH_CMD_TUNE_SERDES`` (38) */
+  struct eth_gser_tune {
+       uint64_t reserved1:2;
+       uint64_t id:6;			/* = 38 (ETH_CMD_TUNE_SERDES) */
+       uint64_t portm_idx:8;
+       uint64_t tx_main:8;
+       uint64_t tx_pre:8;
+       uint64_t tx_post:8;
+       uint64_t tx_pre2:8;
+       uint64_t reserved2:16;
+  };
+
+3.2.5 Interface from ATF to U-Boot/Kernel
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``RPM_CMRX_SCRATCHX[rpm][lmac][0]``\ /\ ``RPM_CMRX_SCRATCHX[rpm][lmac][1]`` are reserved for this purpose for each LMAC. Refer to SCRATCHX_CSRs_ .
+
+* ATF will write the following status for any command submitted in scratchx0:
+
+  * evt_type : ``ETH_EVT_CMD_RESP``
+  * cmd ID : same command ID posted by user
+  * cmd status: Either ``ETH_STAT_SUCCESS``\ /\ ``ETH_STAT_FAIL``
+
+    * If status is returned as ``ETH_STAT_FAIL``\ ,
+      reason/error type will be set in ``eth_err_sts_s`` struct
+
+      In case of LINK UP/DOWN both error type and response
+      will be updated in ``eth_lnk_sts_s`` struct
+
+    * If status is returned as ``ETH_CMD_SUCCESS``\ , based on cmd ID,
+      specific responses will be set. For example:
+
+      * ``GET_FW_VER`` - ``eth_ver_s`` struct
+
+* ATF generetes interrupt for every command that has been processed with the status updated as stated above.
+
+4 User interface commands
+-------------------------
+
+4.1 Change mode via setup menu
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Mode can be changed from EBF setup menu for each of PORTM(Ethernet configuration option from setup menu). Board reset required.
+
+=================================
+Setup - PORTM Selection
+=================================
+1) PORTM0 GSERM0.L0 - 25GAUI_C2C RSFEC
+2) PORTM1 GSERM0.L1 - 25GAUI_C2C No FEC
+3) PORTM2 GSERM0.L2 - 25GAUI_C2C No FEC
+4) PORTM3 GSERM0.L3 - XFI No FEC
+5) PORTM4 GSERM1.L0 - SFI No FEC
+6) PORTM5 GSERM2.L0 - 1000BASE_X
+Z) Return to main menu
+
+4.2 Change mode via U-boot
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. code-block:: bash
+
+set_mode
+set_mode - Modify Interface mode for selected ethernet interface
+
+Usage:
+set_mode Example - set_mode <ethX> mode [portm_idx]
+Change mode of selected network interface
+
+mode encoding:
+
+Ethernet modes:
+    0 - SGMII
+    1 - 1G-X
+    3 - 10G_C2C
+    4 - 10G_C2M
+    5 - 10G_KR
+    7 - 25G_C2C
+    8 - 25G_C2M
+   10 - 25G_CR
+   11 - 25G_KR
+   12 - 40G_C2C
+   13 - 40G_C2M
+   14 - 40G_CR4
+   15 - 40G_KR4
+   17 - 50G_1_C2C
+   18 - 50G_1_C2M
+   20 - 50G_CR
+   21 - 50G_KR
+   23 - 100G_4_C2C
+   24 - 100G_4_C2M
+   25 - 100G_CR4
+   26 - 100G_KR4
+   27 - 50G_2_C2C
+   28 - 50G_2_C2M
+   29 - 50G_CR2
+   30 - 50G_KR2
+   31 - 100G_2_C2C
+   32 - 100G_2_C2M
+   33 - 100G_CR2
+   34 - 100G_KR2
+   35 - SFI_1G
+
+CPRI modes:
+   84 - CPRI_2_4G
+   85 - CPRI_3_1G
+   86 - CPRI_4_9G
+   87 - CPRI_6_1G
+   88 - CPRI_9_8G
+   89 - CPRI_2_4G_TEST
+   90 - CPRI_3_1G_TEST
+   91 - CPRI_4_9G_TEST
+   92 - CPRI_6_1G_TEST
+   93 - CPRI_9_8G_TEST
+   94 - CPRI_12_3G_TEST
+   95 - CPRI_19_7G_TEST
+
+.. Note::
+
+   For NIX connected interfaces, the target interface for mode change is selected
+   by providing <ethX> parameter, 'portm_idx' is not required and ignored.
+
+   For Ethernet Ports connected to BPHY, u-boot doesn't register ethX interface.
+   Thus to change mode use one of the registered ethX interface connected to NIX
+   for sending message to ATF, and pass PORTM# index of BPHY interface to change
+   the mode to.
+   'portm_idx' can be obtained from the EBF menu or the dts.
+
+Example: NIX ports: To change mode to 25GAUI_C2M:
+
+.. code-block:: bash
+
+ > set_mode eth1 8
+
+Example: BPHY ports: To change mode to CPRI_2_4G on PORTM#6:
+
+.. code-block:: bash
+
+ > set_mode eth0 84 6
+
+Example: BPHY ports: To change mode to 25G_C2M on PORTM#10:
+
+.. code-block:: bash
+
+ > set_mode eth0 8 10
+
+get_mode
+get_mode - Display Interface mode for selected ethernet interface
+
+Usage:
+get_mode Example - get_mode <ethX> [portm_idx]
+Use 'ethlist' command to display network interface names
+
+.. Note::
+   For NIX connected interfaces, the target interface
+   to query mode from is selected by providing <ethX>
+   parameter, 'portm_idx' is not required.
+
+   For Ethernet Ports connected to BPHY, u-boot doesn't
+   register ethX interface. Thus to query mode use one
+   of the registered ethX interface connected to NIX
+   for sending message to ATF, and pass 'portm_idx'
+   of BPHY interface to query mode from.
+
+Example: NIX ports: get mode from eth1:
+
+.. code-block:: bash
+
+ > get_mode eth1
+
+Example: BPHY ports: get mode from PORTM#10:
+
+.. code-block:: bash
+
+ > get_mode eth0 10
+
+
+4.3 Change mode via ethtool
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. code-block:: bash
+
+   ethtool -s ethX advertise 0xXXXXXXX
+
+Replace argument ``0xXXXXXXX`` from the below table for the corresponding mode.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Serial   no
+     - ATF   MODE
+     - ETHTOOL   MODE
+     - ethtool   argument
+   * - 1
+     - ETH_MODE_SGMII
+     - ETHTOOL_LINK_MODE_10BaseT_Half_BIT
+     - 0x1
+   * - 2
+     - ETH_MODE_SFI_1G
+     - ETHTOOL_LINK_MODE_1000baseKX_Full_BIT
+     - 0x20000
+   * - 3
+     - ETH_MODE_1000BASEX
+     - ETHTOOL_LINK_MODE_1000BaseX_Full_BIT
+     - 0x20000000000
+   * - 4
+     - ETH_MODE_10G_C2C
+     - ETHTOOL_LINK_MODE_10000baseSR_Full_BIT
+     - 0x80000000000
+   * - 5
+     - ETH_MODE_10G_C2M
+     - ETHTOOL_LINK_MODE_10000baseLR_Full_BIT
+     - 0x100000000000
+   * - 6
+     - ETH_MODE_10G_KR
+     - ETHTOOL_LINK_MODE_10000BaseKR_Full_BIT
+     - 0x80000
+   * - 7
+     - ETH_MODE_25G_C2C
+     - ETHTOOL_LINK_MODE_25000baseSR_Full_BIT
+     - 0x200000000
+   * - 8
+     - ETH_MODE_25G_C2M
+     - ETHTOOL_LINK_MODE_10000baseR_FEC_Full_BIT
+     - 0x100000
+   * - 9
+     - ETH_MODE_25G_CR
+     - ETHTOOL_LINK_MODE_25000BaseCR_Full_BIT
+     - 0x80000000
+   * - 10
+     - ETH_MODE_25G_KR
+     - ETHTOOL_LINK_MODE_25000BaseKR_Full_BIT
+     - 0x100000000
+   * - 11
+     - ETH_MODE_40G_C2C
+     - ETHTOOL_LINK_MODE_40000BaseSR4_Full_BIT
+     - 0x2000000
+   * - 12
+     - ETH_MODE_40G_C2M
+     - ETHTOOL_LINK_MODE_40000BaseLR4_Full_BIT
+     - 0x4000000
+   * - 13
+     - ETH_MODE_40G_CR4
+     - ETHTOOL_LINK_MODE_40000BaseCR4_Full_BIT
+     - 0x1000000
+   * - 14
+     - ETH_MODE_40G_KR4
+     - ETHTOOL_LINK_MODE_40000BaseKR4_Full_BIT
+     - 0x800000
+   * - 15
+     - ETH_MODE_50G_C2C			/* This is 1 lane 50G */
+     - ETHTOOL_LINK_MODE_50000baseSR2_Full_BIT
+     - 0x10000000000
+   * - 16
+     - ETH_MODE_50G_C2M			/* This is 1 lane 50G */
+     - ETHTOOL_LINK_MODE_50000baseDR_Full_BIT
+     - 0x100000000000000
+   * - 17
+     - ETH_MODE_50G_CR			/* This is 1 lane 50G */
+     - ETHTOOL_LINK_MODE_50000baseCR2_Full_BIT
+     - 0x400000000
+   * - 18
+     - ETH_MODE_50G_KR			/* This is 1 lane 50G */
+     - ETHTOOL_LINK_MODE_50000baseKR2_Full_BIT
+     - 0x800000000
+   * - 19
+     - ETH_MODE_50GAUI_2_C2C
+     - ETHTOOL_LINK_MODE_50000baseSR_Full_BIT	/* This is 2 lanes 50G */
+     - 0x20000000000000
+   * - 20
+     - ETH_MODE_50GAUI_2_C2M
+     - ETHTOOL_LINK_MODE_50000baseLR_ER_FR_Full_BIT	/* This is 2 lanes 50G */
+     - 0x80000000000000
+   * - 21
+     - ETH_MODE_50GBASE_CR2_C
+     - ETHTOOL_LINK_MODE_50000BaseCR_Full_BIT	/* This is 2 lanes 50G */
+     - 0x40000000000000
+   * - 22
+     - ETH_MODE_50GBASE_KR2_C
+     - ETHTOOL_LINK_MODE_50000baseKR_Full_BIT	/* This is 2 lanes 50G */
+     - 0x10000000000000
+   * - 23
+     - ETH_MODE_100GAUI_2_C2C
+     - ETHTOOL_LINK_MODE_100000baseSR2_Full_BIT		/* This is 2 lanes 100G */
+     - 0x400000000000000
+   * - 24
+     - ETH_MODE_100GAUI_2_C2M
+     - ETHTOOL_LINK_MODE_100000baseLR2_ER2_FR2_Full_BIT /* This is 2 lanes 100G */
+     - 0x1000000000000000
+   * - 25
+     - ETH_MODE_100GBASE_CR2
+     - ETHTOOL_LINK_MODE_100000baseCR2_Full_BIT /* This is 2 lanes 100G */
+     - 0x800000000000000
+   * - 26
+     - ETH_MODE_100GBASE_KR2
+     - ETHTOOL_LINK_MODE_100000baseKR2_Full_BIT	/* This is 2 lanes 100G */
+     - 0x200000000000000
+   * - 27
+     - ETH_MODE_100G_C2C
+     - ETHTOOL_LINK_MODE_100000BaseSR4_Full_BIT        /* This is 4 lanes 100G */
+     - 0x2000000000
+   * - 28
+     - ETH_MODE_100G_C2M
+     - ETHTOOL_LINK_MODE_100000BaseLR4_ER4_Full_BIT /* This is 4 lanes 100G */
+     - 0x8000000000
+   * - 29
+     - ETH_MODE_100G_CR4
+     - ETHTOOL_LINK_MODE_100000BaseCR4_Full_BIT /* This is 4 lanes 100G */
+     - 0x4000000000
+   * - 30
+     - ETH_MODE_100G_KR4
+     - ETHTOOL_LINK_MODE_100000BaseKR4_Full_BIT  /* This is 4 lanes 100G */
+     - 0x1000000000
+   * - 31
+     - ETH_MODE_SGMII
+     - ETHTOOL_LINK_MODE_10BaseT_Full_BIT
+     - 0x2
+   * - 32
+     - ETH_MODE_SGMII
+     - ETHTOOL_LINK_MODE_100BaseT_Half_BIT
+     - 0x4
+   * - 33
+     - ETH_MODE_SGMII
+     - ETHTOOL_LINK_MODE_100BaseT_Full_BIT
+     - 0x8
+   * - 34
+     - ETH_MODE_SGMII
+     - ETHTOOL_LINK_MODE_1000BaseT_Half_BIT
+     - 0x10
+   * - 35
+     - ETH_MODE_SGMII
+     - ETHTOOL_LINK_MODE_1000BaseT_Full_BIT
+     - 0x20
+
+
+Mode/Speed change is restricted based on the physical port capability. Each port depending on
+whether it has PHY or no PHY, can support different MODES
+listed above. In addition, MODE change from LMAC using four-lane or two-lane to fewer lane is possible
+and vice versa is not supported.
+
+The following are the valid standard mode changes.  Other chip/board specific mode
+changes are supported but not documented here.
+
+The modes in the parenthesis are the associated EBF modes.
+
+Single Lane Chip-to-Chip Protocols
+* MODE change between SGMII / 1000BASEX(1G_X) / 10G_C2C(XFI) / 25G_C2C(25GAUI_C2C)
+
+Single Lane Cable Protocols
+* MODE change between SGMII / 1000BASEX(1G_X) / 10G_C2M(SFI) / 25G_C2M(25GAUI_C2M) / 50G_C2C / 50G_C2M / 10G_KR / 25G_CR / 25G_KR
+
+Two Lane Protocols
+* MODE change between 100_2_C2C / 100_2_C2M
+
+PORTM mode updated (from EBF setup menu/U-boot/Linux) are persistent and will take effect in next reboot as well.
+To ignore persistent settings and restore DT settings, "Restore factory defaults" from EBF setup menu can be used.
+
+4.4 Change FEC via setup menu
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FEC configuration can be changed from EBF setup menu (Ethernet configuration option from setup menu). Board reset required
+
+
+4.5 Change FEC via U-boot
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+ > help set_fec
+
+set_fec - Modify fec type for selected ethernet interface
+
+Usage:
+set_fec Example - set_fec <ethX> [type]
+Set FEC type for any of RVU PF based network interfaces
+- where type - 0 [NO FEC] 1 [BASER_FEC] 2 [RS_FEC]
+Use 'ethlist' command to display network interface names
+
+.. code-block:: bash
+
+ > set_fec ethX 2
+
+.. code-block:: bash
+
+ > get_fec ethX
+
+Supported FEC type: FEC_BASE_R FEC_RS
+Active FEC type: FEC_NONE
+
+Note: get_fec (Active FEC type) of the specific ethernet port will be displayed corrrectly only after the link
+is brought UP (invoked either via dhcp or link command in u-boot)
+
+4.6 Change FEC via ethtool(Linux)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   ethtool --show-fec ethX
+
+The above command provides the supported FEC types for a particular ethernet interface
+
+.. code-block:: bash
+
+   ethtool --set-fec ethX encoding <rs | baser | off>
+
+The above command provides option to user to change FEC type for a particular ethernet interface. Allowed FEC types depends on the protocol.
+
+NOTE: Some of the ethernet modes doesn't support FEC (like SGMII/QSGMII) and some ethernet modes require FEC to be by default enabled
+and for these modes, FEC cannot be changed at run time.
+
+Ethernet modes currently supported by software for which FEC is by default enabled are:
+
+       50GAUI_1_C2C
+       50GAUI_1_C2M
+       100GAUI_2_C2C
+       100GAUI_2_C2M
+
+FEC type updated (from EBF setup menu/U-boot/Linux) are persistent and will take effect in next reboot as well.
+To ignore persistent settings and restore DT settings, "Restore factory defaults" from EBF setup menu can be used.

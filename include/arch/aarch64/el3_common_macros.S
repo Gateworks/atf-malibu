@@ -193,7 +193,9 @@
 	cmp	x0, #ID_AA64PFR0_DIT_SUPPORTED
 	bne	1f
 	mov	x0, #DIT_BIT
+	/*
 	msr	DIT, x0
+	*/
 1:
 	.endm
 

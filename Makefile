@@ -94,6 +94,32 @@ endif
 
 export Q ECHO
 
+# Process Debug flag
+$(eval $(call add_define,DEBUG))
+ifneq (${DEBUG}, 0)
+        BUILD_TYPE	:=	debug
+        TF_CFLAGS	+= 	-g
+
+        ifneq ($(findstring clang,$(notdir $(CC))),)
+             ASFLAGS		+= 	-g
+        else
+             ASFLAGS		+= 	-g -Wa,--gdwarf-2
+        endif
+
+        # Use LOG_LEVEL_INFO by default for debug builds
+        LOG_LEVEL	:=	40
+else
+        BUILD_TYPE	:=	release
+        # Use LOG_LEVEL_NOTICE by default for release builds
+        LOG_LEVEL	:=	20
+endif
+
+# Default build string (git branch and commit)
+ifeq (${BUILD_STRING},)
+        BUILD_STRING	:=	$(shell git describe --long --always --dirty --tags 2> /dev/null)
+endif
+VERSION_STRING		:=	v${VERSION_MAJOR}.${VERSION_MINOR}(${BUILD_TYPE}):${BUILD_STRING}
+
 # The cert_create tool cannot generate certificates individually, so we use the
 # target 'certificates' to create them all
 ifneq (${GENERATE_COT},0)
@@ -162,9 +188,14 @@ endif
 HOSTCC			:=	gcc
 export HOSTCC
 
-CC			:=	${CROSS_COMPILE}gcc
+ifneq (,$(findstring(CLANG,${TOOLCHAIN})))
+        CC		:=	clang -target aarch64-linux-gnu
+        AS		:=	clang -target aarch64-linux-gnu -no-integrated-as
+else
+        CC		:=	${CROSS_COMPILE}gcc
+        AS		:=	${CROSS_COMPILE}gcc
+endif
 CPP			:=	${CROSS_COMPILE}cpp
-AS			:=	${CROSS_COMPILE}gcc
 AR			:=	${CROSS_COMPILE}ar
 LINKER			:=	${CROSS_COMPILE}ld
 OC			:=	${CROSS_COMPILE}objcopy
@@ -411,6 +442,11 @@ ifeq ($(MEASURED_BOOT),1)
 DTC_CPPFLAGS		+=	-DMEASURED_BOOT -DBL2_HASH_SIZE=${TCG_DIGEST_SIZE}
 endif
 
+# this conveys the FIP address to the I/O device driver
+ifneq (${FIP_IMG_FLASH_ADDRESS},)
+  TF_CFLAGS_aarch64	+=	-DFIP_IMG_FLASH_OFFSET=${FIP_IMG_FLASH_ADDRESS}
+endif
+
 ################################################################################
 # Common sources and include directories
 ################################################################################
@@ -443,7 +479,6 @@ INCLUDES		+=	-Iinclude				\
 				${PLAT_INCLUDES}			\
 				${SPD_INCLUDES}
 
-include common/backtrace/backtrace.mk
 
 ################################################################################
 # Generic definitions
@@ -521,6 +556,10 @@ endif
 ################################################################################
 
 include ${PLAT_MAKEFILE_FULL}
+
+# allow platform override ENABLE_BACKTRACE according to docs
+# include backtrace after ENABLE_BACKTRACE define
+include common/backtrace/backtrace.mk
 
 $(eval $(call MAKE_PREREQ_DIR,${BUILD_PLAT}))
 
@@ -640,8 +679,10 @@ endif
 
 # For RAS_EXTENSION, require that EAs are handled in EL3 first
 ifeq ($(RAS_EXTENSION),1)
+    ifneq ($(OVERRIDE_EA_AT_EL3_FIRST),1)
     ifneq ($(HANDLE_EA_EL3_FIRST),1)
         $(error For RAS_EXTENSION, HANDLE_EA_EL3_FIRST must also be 1)
+    endif
     endif
 endif
 

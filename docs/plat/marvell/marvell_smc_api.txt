@@ -1,0 +1,602 @@
+SMC interface
+=============
+
+This document purpose is to describe Marvell-specific SMC runtime services, which
+creates runtime interface for non-secure firmware/OS. Describing standard ARM
+PSCI services is out of the scope of this paper. More information about these
+can be found at [PSCI]. To read more about SMCs, there is specification called
+[SMC Calling Convention][SMCCC].
+
+
+Version 1.0
+-----------
+As for version 1.0, following Marvell's services are available:
+
+1. OCTEONTX_SVC_CALL_COUNT
+
+  * SMC_FID: 0xc200ff00
+  * Input registers values:
+    - x0: SMC_FID
+  * Return value (x0):
+    - Number of implemented Service Calls
+  * Description:
+    This call returns number of currently implemented Marvell's runtime services.
+  * Supported platforms: T81, T83, T9x, CN10K
+
+2. OCTEONTX_SVC_UID
+
+  * SMC FID: 0xc200ff01
+  * Input registers values:
+    - x0: SMC_FID
+  * Return value (x0):
+    - Marvell OEM Service UUID
+  * Description:
+    This call returns Marvell OEM Service UUID
+  * Supported platforms: T81, T83, T9x, CN10K
+
+3. OCTEONTX_SVC_VERSION
+
+  * SMC FID: 0xc200ff03
+  * Input registers values:
+    - x0: SMC_FID
+  * Return value:
+    - x0: SMC version 32-bit major number
+    - x1: SMC version 32-bit minor number
+  * Description:
+    This call returns major and minor version numbers of current Marvell runtime
+    services implementation. Different major revision values indicates possibly
+    incompatible SMC APIs. For two revisions, A and B, for which the major
+    revision values are identical, if the minor revision value of revision B is
+    greater than the minor revision value of revision A, then every SMC in the
+    affected range that works in revision A must also work in revision B.
+    Major revision number is incremented when:
+    * Any SMC call is removed
+    * Updates which aren't backward compatible are made
+    Minor revision number is incremented when:
+    * Any SMC call is added
+    * Backwards compatible changes are made to existing function arguments
+  * Supported platforms: T81, T83, T9x, CN10K
+
+4. OCTEONTX_DRAM_SIZE
+
+  * SMC FID: 0xc2000301
+  * Input registers values:
+    - x0: SMC_FID
+    - x1: Number of NUMA node to check size of DRAM
+  * Return value (x0):
+    - Return size of DRAM in bytes
+  * Description:
+    This call returns size of DRAM in bytes for specified by caller NUMA node.
+  * Supported platforms: T81, T83, T9x, CN10K
+
+5. OCTEONTX_NODE_COUNT
+
+  * SMC FID: 0xc2000601
+  * Input registers values:
+    - x0: SMC_FID
+  * Return value (x0):
+    - Number of NUMA nodes available in system
+  * Description:
+    This call returns number of NUMA nodes in system.
+  * Supported platforms: T81, T83, T9x, CN10K
+
+6. OCTEONTX_INSTALL_GPIO_INT
+
+  * SMC FID: 0xc2000801
+  * Input registers values:
+    - x0: SMC_FID
+    - x1: gpio number
+    - x2: stack pointer
+    - x3: cpu
+    - x4: isr handler address
+  * Return value (x0):
+    - Non-zero value indicates that interrupt cannot be installed
+  * Description:
+    This call allows to enable interrupt for specified gpio number that will be
+    handled on selected cpu. Isr handler address is user space handler called on
+    interrupt. The handler will use specified stack pointer. In x0 register
+    the gpio number will be passed to the handler.
+  * Supported platforms: T83, T9x
+
+7. OCTEONTX_REMOVE_GPIO_INT
+
+  * SMC FID: 0xc2000802
+  * Input registers values:
+    - x0: SMC_FID
+    - x1: gpio number
+  * Return value (x0):
+    - Always zero
+  * Description:
+    This call allows to disable interrupt on specified gpio number that was
+    previously setup by OCTEONTX_INSTALL_GPIO_INT SMC.
+  * Supported platforms: T83, T9x
+
+8. OCTEONTX_PUTC
+
+  * SMC FID: 0xc2000a01
+  * Input registers values:
+    - x0: SMC_FID
+    - x1: character to print
+  * Return value: N/A
+  * Description:
+    This call allows to put single character on console. It's especially useful
+    for debug purposes.
+  * Supported platforms: T81, T83, T9x, CN10K
+
+9. OCTEONTX_DISABLE_RVU_LFS
+
+  * SMC FID: 0xc2000b01
+  * Input registers values:
+    - x0: SMC_FID
+    - x1: node number
+  * Return value (x0):
+    - Always zero
+  * Description:
+    This call can be used to disable NPA/NIX LFs to PFs mapping configured by
+    ARM-TF. Node number is for scalability with future octeontx2 SoC revisions.
+  * Supported platforms: T9x, CN10K
+
+OCTEONTX_INSTALL_WDOG
+  * SMC FID: 0xc2000c01
+  * Input registers values:
+    - x0: SMC FID
+    - x1: core
+    - x2: GTI_ELR physical address
+    - x3: SPSR physical address
+    - x4: Flag indicates kernel in hypervisor mode
+  * Return value (x0):
+    1 on success or 0 on failure
+  * Description:
+    This call can be used to register watchdog handler on a specified core.
+  * Supported platforms: T9x, CN10K
+
+OCTEONTX_REMOVE_WDOG
+  * SMC FID: 0xc2000c02
+  * Input registers values:
+    - x0: SMC FID
+  * Return value (x0):
+    1 on success or 0 on failure
+  * Description:
+    This call can be used to disable watchdog.
+  * Supported platforms: T9x, CN10K
+
+OCTEONTX_START_WDOG
+  * SMC FID: 0xc2000c03
+  * Input registers values:
+    x0: SMC FID
+    x1: EL0 kernel watcdog callback
+    x2: EL1 kernel watcdog callback
+    x3: Watchdog timeout in ms
+    x4: cores
+  * Return value (x0):
+    1 on success or 0 on failure
+  * Description:
+    This call can be used to configure and start the watchdog.
+  * Supported platforms: T9x, CN10K
+
+OCTEONTX_RESTORE_WDOG_CTXT
+  * SMC FID: 0xc2000c04
+  * Input registers values:
+    x0: SMC FID
+  * Return value (x0):
+    1 on success or 0 on failure
+  * Description:
+    This call can be used to restore the CPU context, EL3 context and General purpose register context of the expired watchdog core.
+  * Supported platforms: T9x
+
+OCTEONTX_SERDES_DBG_GET_MEM
+  * SMC_FID: 0xc2000d04
+  * Input registers values:
+    x0: SMC FID
+  * Return value:
+    If DEBUG_ATF_ENABLE_SERDES_DIAGNOSTIC_CMDS is not defined, this call returns SMC_UNK in x0 otherwise the following values are returned.
+    x0: SMC_OK
+    x1: SERDES_EYE_DATA_BASE - address to eye cmd data
+    x2: SERDES_SETTINGS_DATA_BASE - address to serdes cmd data
+    x3: SERDES_PRBS_DATA_BASE - address of prbs data
+  * Description:
+    This call can be used to get the base address of serdes debug memory regions.
+  * Supported platforms: T9x
+
+OCTEONTX_SERDES_DBG_GET_EYE
+  * SMC_FID: 0xc2000d05
+  * Input registers values:
+    x0: SMC FID
+    x1: QLM Num
+    x2: LANE in the QLM
+    x3: Display data to console or file
+  * Return value:
+    If DEBUG_ATF_ENABLE_SERDES_DIAGNOSTIC_CMDS is defined, then capture eye
+    diagram and return 0 on success.
+    x0: SMC_OK /OCTEONTX_SMC_FAIL / SMC_UNK
+  * Description:
+    This call is used for caturing eye diagram on the povided lane in a given qlm
+  * Supported platforms: T9x
+
+OCTEONTX_SERDES_DBG_GET_CONF
+  * SMC_FID: 0xc2000d06
+  * Input registers values:
+    x0: SMC FID
+    x1: QLM Num
+    x2: LANE in the QLM
+    x3: Display data to console or file
+  * Return value:
+    If DEBUG_ATF_ENABLE_SERDES_DIAGNOSTIC_CMDS is defined, then display
+    TX tuning parameters and return 0 on success.
+    x0: SMC_OK /OCTEONTX_SMC_FAIL / SMC_UNK
+  * Description:
+    This call is used for display TX tuning parameters for the povided lane in a given qlm
+  * Supported platforms: T9x
+
+OCTEONTX_SERDES_DBG_GET_PRBS
+  * SMC_FID: 0xc2000d07
+  * Input registers values:
+    x0: SMC FID
+    x1: CMD
+    x1: QLM Num
+    x2: Type of PRBS (7,9,11,15,23,31,100), to inject errors
+    x3: LANE in the QLM
+  * Return value:
+    If DEBUG_ATF_ENABLE_SERDES_DIAGNOSTIC_CMDS is defined, then based on the
+    CMD perform the operation and return 0 on success or -1 on failure
+    x0: SMC_OK /OCTEONTX_SMC_FAIL / SMC_UNK
+  * Description:
+    This call is used for various PRBS operations based on the type requested on a a specific QLM Lane.
+  * Supported platforms: T9x
+
+OCTEONTX_SERDES_DBG_SET_CONF
+  * SMC_FID: 0xc2000d08
+  * Input registers values:
+    x0: SMC FID
+    x1: QLM Num
+    x2: LANE in the QLM
+    x3: TX_SWING
+    x4: TX_PRE and TX_POST
+  * Return value:
+    If DEBUG_ATF_ENABLE_SERDES_DIAGNOSTIC_CMDS is defined, then change TX
+    tuning parameters and return 0 on success.
+    x0: SMC_OK /OCTEONTX_SMC_FAIL / SMC_UNK
+  * Description:
+    This call is used for changing TX tuning parameters for the povided lane in a given qlm
+  * Supported platforms: T9x
+
+OCTEONTX_SERDES_DBG_SET_LOOP
+  * SMC_FID: 0xc2000d09
+  * Input registers values:
+    x0: SMC FID
+    x1: QLM Num
+    x2: LANE in the QLM
+    x3: TYPE
+  * Return value:
+    If DEBUG_ATF_ENABLE_SERDES_DIAGNOSTIC_CMDS is defined, then change TX
+    tuning parameters and return 0 on success.
+    x0: SMC_OK /OCTEONTX_SMC_FAIL / SMC_UNK
+  * Description:
+    This call is used for configuring serdes in loopback mode (FEA/FED/NEA/NED) on a given qlm lane
+  * Supported platforms: T9x
+
+OCTEONTX_LPI_PROP_TBL_BASE
+  * SMC FID: 0xc2000c0c
+  * Input registers values:
+    x0: SMC FID
+  * Return value:
+    x0: SMC_OK
+    x1: LPI table base address
+  * Description:
+    This call can be used to get the LPI table base.
+  * Supported platforms: T9x
+
+OCTEONTX_RVU_RSVD_REG_INFO:
+  * SMC FID: 0xc2000b07
+  * Input registers values:
+    x0: SMC FID
+  * Return value:
+    x0: always 0
+    x1: region address
+    x2: region size
+  * Description:
+    This call can be used to get the RVU reserved region base address and size.
+  * Supported platforms: CN10K
+
+OCTEONTX_LOAD_EFI_APP
+  * SMC FID: 0xc2000b08
+  * Input registers values:
+    x0: SMC FID
+    x1: User address in DRAM
+  * Return value:
+    x0: 0 on success, negative value on failure
+        -1 User buffer is NULL
+        -2 SPI config error or No such file or directory
+        -3 SPI mmap error
+        -5 Input/output error
+    x1: Loaded image size on success
+  * Description:
+    This call can be used to load the EFI application from flash.
+  * Supported platforms: CN10K
+
+OCTEONTX_LOAD_SWITCH_FW
+  * SMC FID: 0xc2000b06
+  * Input registers values:
+    x0: SMC FID
+    x1: User buffer 1
+    x2: User buffer 2
+  * Return value:
+    x0: 0 on success, negative value on failure
+        -1 User buffer is NULL
+    x1: Loaded image size on success.
+  * Description:
+    This call can be used to load switch firmware from flash.
+  * Supported platforms: CN10K
+
+OCTEONTX_SPI_SECURE_UPDATE
+  * SMC FID: 0xc2000b05
+  * Input registers values:
+    x0: SMC FID
+    x1: User buffer
+    x2: Size
+  * Return value:
+    x0: SMC_OK on success or negative value on failure.
+  * Description:
+    This call can be user to copy from user specified DRAM region to SPI.
+  * Supported platforms: CN10K
+
+OCTEONTX_INSTALL_BPHY_PSM_ERRINT
+  * SMC FID: 0xc2000803
+  * Input registers values:
+    x0: SMC FID
+    x1: IRQ number - BPHY interrupt number
+    x2: Stack pointer to use when the handler is called.
+    x3: CPU number to process the bphy interrupts.
+    x4: ISR base - user specified handler address.
+  * Return value:
+    x0: 0 on success, negative value on failure
+  * Description:
+    This call can be used to install user specified BPHY interrupt handler. The handler will be called when EL3 takes the BPHY interrupt.
+  * Supported platforms: CN10FKA, CN10FKB
+
+OCTEONTX_REMOVE_BPHY_PSM_ERRINT
+  * SMC FID: 0xc2000804
+  * Input registers values:
+    x0: SMC FID
+    x1: IRQ number: BPHY interrupt number.
+  * Return value:
+    x0: Returns 0 always
+  * Description:
+    This call can be used to remove the user specified interrupt handler.
+  * Supported platforms: CN10FKA, CN10FKB
+
+OCTEONTX_GET_BPHY_PSM_MAX_IRQ
+  * SMC FID: 0xc2000805
+  * Input registers values:
+    x0: SMC FID
+  * Return value:
+    x0: Returns maximum interrupt number of all available ones.
+  * Description:
+    This call can be used to retrieve maximum number out of all available
+    interrupts. It does not report interrupts count, because some of them
+    may not be available.
+  * Supported platforms: CN10FKA, CN10FKB
+
+OCTEONTX_GET_BPHY_PSM_IRQS_BITMASK:
+  * SMC FID: 0xc2000806
+  * Input registers values:
+    x0: SMC FID
+  * Return value:
+    x0: Returns supported interrupt bitmask.
+  * Description:
+    Available interrupt is represented by a bit set on a position indicated
+    by interrupt number. Maximum supported number of interrupts is limited by
+    bits available in a single register, that is 64. This limit can be extended
+    if necessary.
+  * Supported platforms: CN10FKA, CN10FKB
+
+OCTEONTX_TRC_GET_CPU_BUFSIZE
+  * SMC FID: 0xc2000c0a
+  * Input registers values:
+    x0: SMC FID
+  * Return value:
+    x0: SMC_OK
+    x1: CPU trace buffer size
+  * Description:
+    This call can be used to get the CPU trace buffer size.
+  * Supported platforms: T9x
+
+OCTEONTX_TRC_ALLOC_SBUF
+  * SMC FID: 0xc2000c05
+  * Input registers values:
+    x0: SMC FID
+    x1: Size of the per cpu trace buffer
+    x2: CPU number
+    x3: LLC log register. Warning is issued if this value is not zero.
+  * Return value:
+    x0: SMC_OK on success or SMC_UNK on failure
+    x1: Address of the CPU trace buffer
+  * Description:
+  * Supported platforms: T9x
+
+OCTEONTX_TRC_REGISTER_DRVBUF
+  * SMC FID: 0xc2000c06
+  * Input registers values:
+    x0: SMC FID
+    x1: Non secure buffer address
+    x2: size of the non secure buffer
+  * Return value:
+    x0: SMC_OK on success or SMC_UNK on failure
+  * Description:
+    This call can used to map the the user specified non-secure buffer for copying trace data
+  * Supported platforms: T9x
+
+OCTEONTX_TRC_COPY_TO_DRVBUF
+  * SMC FID: 0xc2000c07
+  * Input registers values:
+    x0: SMC FID
+    x1: Destination buffer in non secure space
+    x2: Source buffer within CPU trace buffer area
+    x3: Size to be copied
+  * Return value:
+    x0: SMC_OK on success or SMC_UNK on failure
+  * Description:
+    This call can be used to copy the trace buffer content to non secure memory region.
+  * Supported platforms: T9x
+
+OCTEONTX_TRC_FREE_SBUF
+  * SMC FID: 0xc2000c08
+  * Input registers values:
+    x0: SMC FID
+  * Return value:
+    x0: SMC_OK
+  * Description:
+    This call is a NOP as of now. It just returns SMC_OK
+  * Supported platforms: T9x
+
+OCTEONTX_TRC_UNREGISTER_DRVBUF
+  * SMC FID: 0xc2000c09
+  * Input registers values:
+    x0: SMC FID
+    x1: non secure buffer address
+    x2: non secue buffer size
+  * Return value:
+    x0. SMC_OK on success, SMC_UNK on failure
+  * Description:
+    This call can used to ummap the the user buffer used in OCTEONTX_TRC_REGISTER_DRVBUF call.
+  * Supported platforms: T9x
+
+OCTEONTX_EDAC
+  * SMC FID : 0xc2000c0b
+  * Input registers values:
+    x0: SMC FID
+    x1: EDAC command id
+	0 - OCTEONTX_EDAC_VER, report version
+	3 - OCTEONTX_EDAC_INJECT, inject DRAM ECC fault, x2=target_addr, x3=flags
+	4 - OCTEONTX_EDAC_MDC_CONST, read CAVM_MDC_CONST, returns struct mdc_win_cmd
+	5 - OCTEONTX_EDAC_MDC_RW, read/write MDC, x2=mdc_win_cmd, x3=value, x4=mask
+		r/w determined by x2.s.w, where x4 set, x3 bits imposed
+	6 - OCTEONTX_EDAC_MDC_ROM, read MDC_RAS_ROM x2=addr
+	7 - OCTEONTX_EDAC_POISON_EN, x2=0/1 dis/enable poison handling
+    x2: Parameters to the EDAC command (refer the command id description)
+  * Return value:
+    x0: 0 on success, negative value on failure
+  * Description:
+  * Supported platforms: T9x if RAS extension is defined
+
+PLAT_OCTEONTX_GET_EFI_SHARED_MEM
+  * SMC FID : 0xc2000b09
+  * Input register values:
+    x0: SMC FID
+  * Return value:
+    x0: 0 on success, negative value for failure
+    x1: Shared memory physical address
+    x2: Shared memory size
+  * Description:
+    This call can be used to find out the shared memory area that is used for
+    EFI variables.
+  * Supported platforms: CN10k
+
+PLAT_OCTEONTX_WRITE_EFI_VAR
+  * SMC FID : 0xc2000b0a
+  * Input register values:
+    x0: SMC FID
+    x1: Physical address of buffer
+    x2: Size of buffer in bytes
+  * Return value:
+    x0: 0 on success, negative value for failure
+  * Description;
+    This call is used for UEFI runtime SetVariable call to save EFI
+    variables in flash.
+  * Supported platforms: T9x, CN10k
+
+PLAT_OCTEONTX_SEC_SPI_OP
+  * SMC FID : 0xc2000b0b
+  * x1 - Offset in flash
+  * x2 - Buffer
+  * x3 - Operation size in bytes
+  * x4 - x3[3:0] - Bus, x3[7:4] - Chipselect, x3[8-15] - operation
+  *	Read - 1, Info - 4
+  *
+  * Return:
+  *	x0: 0 on Success, -1 on failure.
+
+PLAT_OCTEONTX_VERIFY_FIRMWARE
+  * SMC FID : 0xc2000b0c
+  * x1 - descriptor address
+  * x2 - descriptor size
+  *
+  * Return value:
+  *	x0:	0 on success, -1 on error
+  *	x1:	error code
+
+PLAT_OCTEONTX_PERSIST_DATA_COMMAND
+  * SMC FID : 0xc2000b0d
+  * x0 - PLAT_OCTEONTX_PERSIST_DATA_COMMAND
+  * Input Args:
+  * x1 - Persistent data to be updated
+  *	1 - UPDATE_USERDEF_PRESERVE_MEMSZ (update user defined
+  *		preserve region size)
+  * x2 - Size of the user defined preserve memory
+  *		If size is 0, the region will be disabled.
+  *		If size is non-zero, preserve memory size will
+  *		be updated in SPI flash
+  * Return value:
+  *	x0: 0 on success, -1 on failure
+
+PLAT_OCTEONTX_RESET_RNG_EBG_HEALTH_STATE
+  * SMC FID : 0xc2000b0f
+  * x0 - PLAT_OCTEONTX_RESET_RNG_EBG_HEALTH_STATE
+  * Return value:
+  *	x0: 0 on success, -1 on failure
+
+PLAT_OCTEONTX_SPI_READ_FLASH
+  * SMC FID: 0xc2000b11
+  * Input registers values:
+    x0: SMC FID
+    x1: User buffer
+    x2: Size
+  * Return value:
+    x0: SMC_OK on success or negative value on failure.
+  * Description:
+    This call can be used to copy from SPI to user specified DRAM region.
+  * Supported platforms: CN10K
+
+PLAT_OCTEONTX_MEM_TEST_CONFIG
+  * SMC FID: 0xc2000b15
+  * Input registers values:
+    x0: SMC FID
+    x1: operation
+    x2: 32 bit value for mem_test_settings, reboot
+    x3: 32 bit value for mem_test_settings, power_on
+    x4: 32 bit value for memory length under test, memory_length
+  * Return value:
+    a0: Return 0 on success or error code on failure
+    a1: 32 bit value for mem_test_settings, reboot
+    a2: 32 bit value for mem_test_settings, power_on
+    a3: 32 bit value for memory length under test, memory_length
+  * Description:
+    This SMC call sets or gets memory POST settings.
+  * Supported platforms: CN10K
+
+PLAT_OCTEONTX_EHSM_READ_CSR
+  * SMC FID: 0xc2000b16
+  * Input registers values:
+    x0: SMC FID
+    x1: eHSM register offset, Following enum defines the register offset
+        enum smc_reg
+        {
+            /* Request input registers */
+            BOOTROM_STATUS          = 0x1,
+            ROOT_TRUST_STATUS       = 0x2,
+            CHAIN_OF_TRUST_STATUS   = 0x3,
+            UUID0                   = 0x4,
+            UUID1                   = 0x5,
+            UUID2                   = 0x6,
+            KEY_REVOC_STATUS        = 0x7,
+            FW_SEC_VER              = 0x8,
+        };
+  * Return value:
+    a0: Return 0 on success or error code on failure
+    a1: 32 bit eHSM register value
+  * Description:
+    This SMC call can be used to read specific eHSM CSRs.
+  * Supported platforms: CN10K
+
+[PSCI]:    http://infocenter.arm.com/help/topic/com.arm.doc.den0022d/Power_State_Coordination_Interface_PDD_v1_1_DEN0022D.pdf
+[SMCCC]:   http://infocenter.arm.com/help/topic/com.arm.doc.den0028b/ARM_DEN0028B_SMC_Calling_Convention.pdf
