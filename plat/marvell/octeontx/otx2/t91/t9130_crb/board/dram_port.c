@@ -21,8 +21,7 @@
 
 #define MVEBU_MPP_CTRL_MASK			0xf
 
-#if 0
-static void hexdump(u8 *buf, int size)
+static void hexdump(u8 *buf, int size, bool useascii)
 {
 	int i = 0;
 	char ascii[20];
@@ -32,7 +31,8 @@ static void hexdump(u8 *buf, int size)
 		if (0 == (i % 16)) {
 			if (ascii[0]) {
 				ascii[16] = 0;
-				//printf("  |%s|", ascii);
+				if (useascii)
+					printf("  |%s|", ascii);
 				printf("\n");
 				ascii[0] = 0;
 			}
@@ -44,14 +44,10 @@ static void hexdump(u8 *buf, int size)
 		printf("%02x ", buf[i]);
 		ascii[i % 16] = (buf[i] < ' ' || buf[i] > 127) ? '.' : buf[i];
 	}
-	//printf("  |%s|", ascii);
+	if (useascii)
+		printf("  |%s|", ascii);
 	printf("\n");
 }
-#else
-static void hexdump(u8 *buf, int size)
-{
-}
-#endif
 
 /*
  * This struct provides the DRAM training code with
@@ -231,7 +227,7 @@ void mv_ddr_spd_timing_set(union mv_ddr_spd_data *spd, unsigned int timing_data[
 }
 
 /* create SPD data for Gateworks malibu dram config */
-union mv_ddr_spd_data *gateworks_malibu_dram_config(void)
+union mv_ddr_spd_data *gateworks_malibu_dram_config(int size, int width)
 {
 	union mv_ddr_spd_data *spd = &spd_data;
 
@@ -309,8 +305,7 @@ union mv_ddr_spd_data *gateworks_malibu_dram_config(void)
 	mv_ddr_spd_timing_set(spd, timing_data);
 	memcpy(&spd->all_bytes[20], &cl, sizeof(cl));
 
-	NOTICE("%s %s\n", speed, topology);
-	hexdump((unsigned char *)spd, sizeof(union mv_ddr_spd_data));
+	printf("%s %s\n", speed, topology);
 
 	return spd;
 }
@@ -341,17 +336,35 @@ void gateworks_malibu_mpp_config(void)
 
 void gateworks_malibu_config(void)
 {
-//	printf("%s\n", __func__);
-
-	/* TODO: read GSC EEPROM to determine DRAM config */
 	struct mv_ddr_topology_map *tm = mv_ddr_topology_map_get();
+	union mv_ddr_spd_data *spd;
+	unsigned char eeprom[0x50];
+	int ret, i, csum;
+	int size = 8192;
+	int width = 32;
 
-	union mv_ddr_spd_data *spd = gateworks_malibu_dram_config();
+	printf("\nGateworks Malibu SPL %s %s\n", version_string, build_message);
+
+	/* read GSC EEPROM to determine DRAM config */
+	ret = i2c_read(0x51, 0x0, 1, eeprom, sizeof(eeprom));
+	if (ret) {
+		printf("EEPROM: Failed to read EEPROM\n");
+	} else {
+		/* validate checksum */
+		for (csum = 0, i = 0; i < (int)sizeof(eeprom) - 2; i++)
+			csum += eeprom[i];
+		if ((eeprom[0x4e] != csum >> 8) || (eeprom[0x4f] != (csum & 0xff))) {
+			printf("EEPROM: Invalid Checksum\n");
+			hexdump(eeprom, sizeof(eeprom), true);
+		} else {
+			size = 16 << eeprom[0x2b];
+			width = 8 << eeprom[0x2d];
+		}
+	}
+
+	spd = gateworks_malibu_dram_config(size, width);
 	memcpy(tm->spd_data.all_bytes, spd->all_bytes, sizeof(tm->spd_data.all_bytes));
-	// useful for testing topology but for some reason can't call twice?
-	//mv_ddr_topology_map_update();
 
-	/* TODO: any early GPIO config? */
 	gateworks_malibu_mpp_config();
 
 	/* TODO: how to pass dtb to U-Boot? */
